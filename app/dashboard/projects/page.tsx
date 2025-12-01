@@ -33,6 +33,7 @@ interface Project {
   id: string;
   code: string;
   name: string;
+  status?: "active" | "archived";
   created_at: string;
 }
 
@@ -69,7 +70,7 @@ function ProjectCard({ project, formatDate }: { project: Project; formatDate: (d
               <p className="font-mono font-bold text-white text-lg">{project.code}</p>
               <p className="text-sm text-zinc-300 mt-0.5">{project.name}</p>
             </div>
-            <StatusBadge status="active" />
+            <StatusBadge status={project.status ?? "active"} />
           </div>
           <div className="flex items-center gap-1.5 mt-3 text-xs text-zinc-500">
             <Calendar className="h-3.5 w-3.5" />
@@ -340,7 +341,7 @@ export default function ProjectsPage() {
                           {project.name}
                         </TableCell>
                         <TableCell>
-                          <StatusBadge status="active" />
+                          <StatusBadge status={project.status ?? "active"} />
                         </TableCell>
                         <TableCell className="text-zinc-400">
                           <div className="flex items-center gap-2">
