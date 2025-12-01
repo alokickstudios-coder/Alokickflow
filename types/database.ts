@@ -12,7 +12,17 @@ export type Json =
   | Json[];
 
 export type SubscriptionTier = "free" | "pro" | "enterprise";
-export type UserRole = "super_admin" | "admin" | "qc" | "vendor";
+export type UserRole = 
+  | "super_admin" 
+  | "admin" 
+  | "manager"
+  | "operator"
+  | "qc" 
+  | "vendor"
+  | "translation"
+  | "dubbing"
+  | "mixing"
+  | "subtitling";
 export type DeliveryStatus =
   | "uploading"
   | "processing"

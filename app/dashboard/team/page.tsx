@@ -11,6 +11,11 @@ import {
   MoreVertical,
   Edit,
   Crown,
+  Languages,
+  Mic,
+  Music,
+  Subtitles,
+  Video,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,19 +56,56 @@ import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
+// All available roles for team management
+type TeamRole = 
+  | "admin" 
+  | "manager" 
+  | "operator" 
+  | "vendor"
+  | "translation"
+  | "dubbing"
+  | "mixing"
+  | "subtitling";
+
 interface TeamMember {
   id: string;
   full_name: string | null;
-  role: "admin" | "manager" | "operator" | "vendor";
+  role: TeamRole;
   email?: string;
   created_at: string;
 }
 
-const roleColors: Record<string, string> = {
+const roleColors: Record<TeamRole, string> = {
   admin: "bg-purple-500/20 text-purple-400 border-purple-500/30",
   manager: "bg-blue-500/20 text-blue-400 border-blue-500/30",
   operator: "bg-green-500/20 text-green-400 border-green-500/30",
   vendor: "bg-orange-500/20 text-orange-400 border-orange-500/30",
+  translation: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
+  dubbing: "bg-pink-500/20 text-pink-400 border-pink-500/30",
+  mixing: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+  subtitling: "bg-indigo-500/20 text-indigo-400 border-indigo-500/30",
+};
+
+const roleLabels: Record<TeamRole, string> = {
+  admin: "Admin",
+  manager: "Manager",
+  operator: "Operator",
+  vendor: "Vendor",
+  translation: "Translation",
+  dubbing: "Dubbing",
+  mixing: "Mixing",
+  subtitling: "Subtitling/Video",
+};
+
+const roleIcons: Record<TeamRole, React.ReactNode> = {
+  admin: <Crown className="h-3 w-3" />,
+  manager: <Shield className="h-3 w-3" />,
+  operator: <Edit className="h-3 w-3" />,
+  vendor: null,
+  translation: <Languages className="h-3 w-3" />,
+  dubbing: <Mic className="h-3 w-3" />,
+  mixing: <Music className="h-3 w-3" />,
+  subtitling: <Subtitles className="h-3 w-3" />,
 };
 
 export default function TeamPage() {
@@ -161,7 +203,7 @@ export default function TeamPage() {
     }
   };
 
-  const handleChangeRole = async (memberId: string, newRole: string) => {
+  const handleChangeRole = async (memberId: string, newRole: TeamRole) => {
     try {
       const { error } = await supabase
         .from("profiles")
@@ -171,7 +213,7 @@ export default function TeamPage() {
       if (error) throw error;
 
       setMembers((prev) =>
-        prev.map((m) => (m.id === memberId ? { ...m, role: newRole as TeamMember["role"] } : m))
+        prev.map((m) => (m.id === memberId ? { ...m, role: newRole } : m))
       );
 
       toast({
@@ -266,9 +308,51 @@ export default function TeamPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="admin">Admin</SelectItem>
-                    <SelectItem value="manager">Manager</SelectItem>
-                    <SelectItem value="operator">Operator</SelectItem>
+                    <SelectItem value="admin">
+                      <div className="flex items-center gap-2">
+                        <Crown className="h-3.5 w-3.5 text-purple-400" />
+                        Admin
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="manager">
+                      <div className="flex items-center gap-2">
+                        <Shield className="h-3.5 w-3.5 text-blue-400" />
+                        Manager
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="operator">
+                      <div className="flex items-center gap-2">
+                        <Edit className="h-3.5 w-3.5 text-green-400" />
+                        Operator
+                      </div>
+                    </SelectItem>
+                    <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium border-t border-zinc-800 mt-1 pt-2">
+                      Production Teams
+                    </div>
+                    <SelectItem value="translation">
+                      <div className="flex items-center gap-2">
+                        <Languages className="h-3.5 w-3.5 text-cyan-400" />
+                        Translation Team
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="dubbing">
+                      <div className="flex items-center gap-2">
+                        <Mic className="h-3.5 w-3.5 text-pink-400" />
+                        Dubbing Team
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="mixing">
+                      <div className="flex items-center gap-2">
+                        <Music className="h-3.5 w-3.5 text-amber-400" />
+                        Mixing Team
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="subtitling">
+                      <div className="flex items-center gap-2">
+                        <Subtitles className="h-3.5 w-3.5 text-indigo-400" />
+                        Subtitling / Video Editing
+                      </div>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -291,7 +375,7 @@ export default function TeamPage() {
               className="flex-1 max-w-sm"
             />
             <Select value={roleFilter} onValueChange={setRoleFilter}>
-              <SelectTrigger className="w-40">
+              <SelectTrigger className="w-48">
                 <SelectValue placeholder="Filter by role" />
               </SelectTrigger>
               <SelectContent>
@@ -299,6 +383,13 @@ export default function TeamPage() {
                 <SelectItem value="admin">Admin</SelectItem>
                 <SelectItem value="manager">Manager</SelectItem>
                 <SelectItem value="operator">Operator</SelectItem>
+                <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium border-t border-zinc-800 mt-1 pt-2">
+                  Production Teams
+                </div>
+                <SelectItem value="translation">Translation</SelectItem>
+                <SelectItem value="dubbing">Dubbing</SelectItem>
+                <SelectItem value="mixing">Mixing</SelectItem>
+                <SelectItem value="subtitling">Subtitling/Video</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -366,8 +457,8 @@ export default function TeamPage() {
                           roleColors[member.role]
                         )}
                       >
-                        {member.role === "admin" && <Crown className="h-3 w-3" />}
-                        {member.role.charAt(0).toUpperCase() + member.role.slice(1)}
+                        {roleIcons[member.role]}
+                        {roleLabels[member.role]}
                       </span>
                     </TableCell>
                     <TableCell className="text-zinc-400">
@@ -380,26 +471,64 @@ export default function TeamPage() {
                             <MoreVertical className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="glass border-zinc-800/50">
+                        <DropdownMenuContent align="end" className="glass border-zinc-800/50 w-56">
+                          <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium">
+                            Change Role
+                          </div>
+                          <DropdownMenuItem
+                            onClick={() => handleChangeRole(member.id, "admin")}
+                          >
+                            <Crown className="h-4 w-4 mr-2 text-purple-400" />
+                            Make Admin
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => handleChangeRole(member.id, "manager")}
                           >
-                            <Shield className="h-4 w-4 mr-2" />
+                            <Shield className="h-4 w-4 mr-2 text-blue-400" />
                             Make Manager
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => handleChangeRole(member.id, "operator")}
                           >
-                            <Edit className="h-4 w-4 mr-2" />
+                            <Edit className="h-4 w-4 mr-2 text-green-400" />
                             Make Operator
                           </DropdownMenuItem>
+                          <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium border-t border-zinc-800 mt-1 pt-2">
+                            Assign to Team
+                          </div>
                           <DropdownMenuItem
-                            onClick={() => handleRemoveMember(member.id)}
-                            className="text-red-400"
+                            onClick={() => handleChangeRole(member.id, "translation")}
                           >
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            Remove
+                            <Languages className="h-4 w-4 mr-2 text-cyan-400" />
+                            Translation Team
                           </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => handleChangeRole(member.id, "dubbing")}
+                          >
+                            <Mic className="h-4 w-4 mr-2 text-pink-400" />
+                            Dubbing Team
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => handleChangeRole(member.id, "mixing")}
+                          >
+                            <Music className="h-4 w-4 mr-2 text-amber-400" />
+                            Mixing Team
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => handleChangeRole(member.id, "subtitling")}
+                          >
+                            <Subtitles className="h-4 w-4 mr-2 text-indigo-400" />
+                            Subtitling / Video Editing
+                          </DropdownMenuItem>
+                          <div className="border-t border-zinc-800 mt-1 pt-1">
+                            <DropdownMenuItem
+                              onClick={() => handleRemoveMember(member.id)}
+                              className="text-red-400"
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Remove Member
+                            </DropdownMenuItem>
+                          </div>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>

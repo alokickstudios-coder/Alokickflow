@@ -4,7 +4,17 @@
 
 import { createClient } from "@/lib/supabase/server";
 
-export type UserRole = "super_admin" | "admin" | "qc" | "vendor";
+export type UserRole = 
+  | "super_admin" 
+  | "admin" 
+  | "manager"
+  | "operator"
+  | "qc" 
+  | "vendor"
+  | "translation"
+  | "dubbing"
+  | "mixing"
+  | "subtitling";
 
 export async function getCurrentUserRole(): Promise<UserRole | null> {
   const supabase = await createClient();
