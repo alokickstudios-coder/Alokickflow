@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Download, FileVideo, FileAudio, Filter } from "lucide-react";
+import { Download, FileVideo, FileAudio, Filter, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -72,7 +72,7 @@ function StatusBadge({ status }: { status: Delivery["status"] }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
         className
       )}
     >
@@ -81,18 +81,71 @@ function StatusBadge({ status }: { status: Delivery["status"] }) {
   );
 }
 
-function FileTypeIcon({ fileName }: { fileName: string }) {
+function FileTypeIcon({ fileName, className }: { fileName: string; className?: string }) {
   const extension = fileName.split(".").pop()?.toLowerCase();
   const isVideo = ["mov", "mp4", "avi", "mkv", "mxf"].includes(extension || "");
   const isAudio = ["wav", "aiff", "mp3", "flac", "m4a"].includes(extension || "");
 
   if (isVideo) {
-    return <FileVideo className="h-4 w-4 text-zinc-400" />;
+    return <FileVideo className={cn("h-4 w-4 text-purple-400", className)} />;
   }
   if (isAudio) {
-    return <FileAudio className="h-4 w-4 text-zinc-400" />;
+    return <FileAudio className={cn("h-4 w-4 text-blue-400", className)} />;
   }
-  return <FileVideo className="h-4 w-4 text-zinc-400" />;
+  return <FileVideo className={cn("h-4 w-4 text-zinc-400", className)} />;
+}
+
+// Mobile Card View Component
+function DeliveryCard({ delivery, onDownload }: { delivery: Delivery; onDownload: () => void }) {
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="p-4 rounded-lg bg-zinc-900/50 border border-zinc-800/50"
+    >
+      <div className="flex items-start gap-3">
+        <div className="h-10 w-10 rounded-lg bg-zinc-800/50 flex items-center justify-center shrink-0">
+          <FileTypeIcon fileName={delivery.file_name} className="h-5 w-5" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-white truncate">
+                {delivery.original_file_name || delivery.file_name}
+              </p>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                {delivery.project?.code || "No Project"} • {formatDate(delivery.created_at)}
+              </p>
+            </div>
+            <StatusBadge status={delivery.status} />
+          </div>
+          <div className="flex items-center justify-between mt-3">
+            <span className="text-xs text-zinc-400">
+              {delivery.vendor?.full_name || "Unknown Vendor"}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onDownload}
+              className="h-8 px-3 text-zinc-400 hover:text-white"
+            >
+              <Download className="h-4 w-4 mr-1.5" />
+              <span className="text-xs">Download</span>
+            </Button>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
 }
 
 export default function DeliveriesPage() {
@@ -101,6 +154,7 @@ export default function DeliveriesPage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [showFilters, setShowFilters] = useState(false);
 
   const fetchDeliveries = async () => {
     try {
@@ -186,10 +240,8 @@ export default function DeliveriesPage() {
 
   const handleDownload = async (delivery: Delivery) => {
     try {
-      // Extract file path from storage_path
       const filePath = delivery.storage_path || delivery.file_name;
       
-      // Try to create a signed URL from Supabase Storage
       try {
         const { data, error } = await supabase.storage
           .from("deliveries")
@@ -202,13 +254,10 @@ export default function DeliveriesPage() {
           return;
         }
       } catch (storageError) {
-        // If storage bucket doesn't exist or file not found, fall back to direct download
         console.warn("Storage download failed, using fallback:", storageError);
       }
 
-      // Fallback: For now, show a message
-      // In production, you'd implement a server-side endpoint to serve files
-      alert(`Download functionality will be available once storage is configured.\n\nFile: ${delivery.file_name}\nPath: ${filePath}`);
+      alert(`Download functionality will be available once storage is configured.\n\nFile: ${delivery.file_name}`);
     } catch (error) {
       console.error("Error downloading file:", error);
       alert("Failed to download file. Please try again.");
@@ -226,30 +275,49 @@ export default function DeliveriesPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-semibold text-white mb-2">Deliveries</h1>
-        <p className="text-zinc-400">
+        <h1 className="text-2xl sm:text-3xl font-semibold text-white mb-1 sm:mb-2">Deliveries</h1>
+        <p className="text-sm sm:text-base text-zinc-400">
           Manage and track all file uploads and QC results
         </p>
       </div>
 
-      {/* Deliveries Table */}
+      {/* Deliveries Card */}
       <Card className="glass border-zinc-800/50">
-        <CardHeader className="pb-2.5 px-6 pt-6">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-white text-lg">All Deliveries</CardTitle>
-            <div className="flex items-center gap-3">
+        <CardHeader className="pb-3 px-4 sm:px-6 pt-4 sm:pt-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <CardTitle className="text-white text-base sm:text-lg">
+              All Deliveries
+              <span className="text-zinc-500 font-normal text-sm ml-2">
+                ({filteredDeliveries.length})
+              </span>
+            </CardTitle>
+            
+            {/* Mobile Filter Toggle */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="sm:hidden flex items-center gap-2"
+              onClick={() => setShowFilters(!showFilters)}
+            >
+              <Filter className="h-4 w-4" />
+              Filters
+              <ChevronDown className={cn("h-4 w-4 transition-transform", showFilters && "rotate-180")} />
+            </Button>
+
+            {/* Desktop Filters */}
+            <div className="hidden sm:flex items-center gap-3">
               <SearchInput
                 placeholder="Search files..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-64"
+                className="w-48 lg:w-64"
               />
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-40">
-                  <SelectValue placeholder="Filter by status" />
+                <SelectTrigger className="w-32 lg:w-40">
+                  <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Status</SelectItem>
@@ -261,115 +329,160 @@ export default function DeliveriesPage() {
               </Select>
             </div>
           </div>
+
+          {/* Mobile Filters Dropdown */}
+          {showFilters && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="sm:hidden pt-3 space-y-3"
+            >
+              <SearchInput
+                placeholder="Search files..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full"
+              />
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Filter by status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="qc_passed">Passed</SelectItem>
+                  <SelectItem value="qc_failed">Failed</SelectItem>
+                  <SelectItem value="processing">Processing</SelectItem>
+                  <SelectItem value="uploading">Uploading</SelectItem>
+                </SelectContent>
+              </Select>
+            </motion.div>
+          )}
         </CardHeader>
+
         <CardContent className="p-0">
           {loading ? (
-            <div className="p-6 space-y-3">
+            <div className="p-4 sm:p-6 space-y-3">
               {[1, 2, 3, 4, 5].map((i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-10 flex-1" />
-                </div>
+                <Skeleton key={i} className="h-20 sm:h-12 w-full" />
               ))}
             </div>
-          ) : deliveries.length === 0 ? (
-            <div className="text-center py-12 px-6">
+          ) : filteredDeliveries.length === 0 ? (
+            <div className="text-center py-12 px-4 sm:px-6">
+              <FileVideo className="h-12 w-12 text-zinc-600 mx-auto mb-3" />
               <p className="text-zinc-400">
                 {searchQuery || statusFilter !== "all"
                   ? "No deliveries match your filters"
                   : "No deliveries yet"}
               </p>
+              <p className="text-sm text-zinc-500 mt-1">
+                Upload files from the dashboard to get started
+              </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-zinc-800/50 hover:bg-zinc-900/30">
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[300px]">
-                      File Name
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
-                      Project
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[150px]">
-                      Vendor
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
-                      Status
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
-                      Date
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[100px] text-right">
-                      Actions
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredDeliveries.map((delivery, index) => (
-                    <motion.tr
-                      key={delivery.id}
-                      initial={{ opacity: 0, y: 5 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.15, delay: index * 0.02 }}
-                      className="border-zinc-800/50 hover:bg-zinc-900/30 transition-colors"
-                    >
-                      <TableCell className="py-2">
-                        <div className="flex items-center gap-2.5">
-                          <FileTypeIcon fileName={delivery.file_name} />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-white truncate">
-                              {delivery.original_file_name || delivery.file_name}
-                            </p>
-                            <p className="text-xs text-zinc-500 truncate">
-                              {delivery.file_name}
-                            </p>
+            <>
+              {/* Mobile Card View */}
+              <div className="sm:hidden p-4 space-y-3">
+                {filteredDeliveries.map((delivery) => (
+                  <DeliveryCard
+                    key={delivery.id}
+                    delivery={delivery}
+                    onDownload={() => handleDownload(delivery)}
+                  />
+                ))}
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="hidden sm:block overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-zinc-800/50 hover:bg-zinc-900/30">
+                      <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[300px]">
+                        File Name
+                      </TableHead>
+                      <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
+                        Project
+                      </TableHead>
+                      <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[150px]">
+                        Vendor
+                      </TableHead>
+                      <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
+                        Status
+                      </TableHead>
+                      <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
+                        Date
+                      </TableHead>
+                      <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[100px] text-right">
+                        Actions
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredDeliveries.map((delivery, index) => (
+                      <motion.tr
+                        key={delivery.id}
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.15, delay: index * 0.02 }}
+                        className="border-zinc-800/50 hover:bg-zinc-900/30 transition-colors"
+                      >
+                        <TableCell className="py-2">
+                          <div className="flex items-center gap-2.5">
+                            <FileTypeIcon fileName={delivery.file_name} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-white truncate">
+                                {delivery.original_file_name || delivery.file_name}
+                              </p>
+                              <p className="text-xs text-zinc-500 truncate">
+                                {delivery.file_name}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <div>
-                          <span className="text-sm font-mono font-semibold text-zinc-300">
-                            {delivery.project?.code || "—"}
+                        </TableCell>
+                        <TableCell className="py-2">
+                          <div>
+                            <span className="text-sm font-mono font-semibold text-zinc-300">
+                              {delivery.project?.code || "—"}
+                            </span>
+                            {delivery.project?.name && (
+                              <p className="text-xs text-zinc-500 truncate">
+                                {delivery.project.name}
+                              </p>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="py-2">
+                          <span className="text-sm text-zinc-300">
+                            {delivery.vendor?.full_name || "Unknown Vendor"}
                           </span>
-                          {delivery.project?.name && (
-                            <p className="text-xs text-zinc-500 truncate">
-                              {delivery.project.name}
-                            </p>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <span className="text-sm text-zinc-300">
-                          {delivery.vendor?.full_name || "Unknown Vendor"}
-                        </span>
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <StatusBadge status={delivery.status} />
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <span className="text-xs text-zinc-400">
-                          {formatDate(delivery.created_at)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="py-2 text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDownload(delivery)}
-                          className="h-7 px-2 text-zinc-400 hover:text-white"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </Button>
-                      </TableCell>
-                    </motion.tr>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                        </TableCell>
+                        <TableCell className="py-2">
+                          <StatusBadge status={delivery.status} />
+                        </TableCell>
+                        <TableCell className="py-2">
+                          <span className="text-xs text-zinc-400">
+                            {formatDate(delivery.created_at)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="py-2 text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDownload(delivery)}
+                            className="h-7 px-2 text-zinc-400 hover:text-white"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </Button>
+                        </TableCell>
+                      </motion.tr>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
     </div>
   );
 }
-

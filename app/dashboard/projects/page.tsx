@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Plus, Calendar } from "lucide-react";
+import { Plus, Calendar, FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -40,7 +40,7 @@ function StatusBadge({ status }: { status: "active" | "archived" }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
         status === "active"
           ? "border-green-500/20 bg-green-500/10 text-green-400"
           : "border-zinc-500/20 bg-zinc-500/10 text-zinc-400"
@@ -48,6 +48,36 @@ function StatusBadge({ status }: { status: "active" | "archived" }) {
     >
       {status === "active" ? "Active" : "Archived"}
     </span>
+  );
+}
+
+// Mobile Project Card
+function ProjectCard({ project, formatDate }: { project: Project; formatDate: (date: string) => string }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="p-4 rounded-lg bg-zinc-900/50 border border-zinc-800/50"
+    >
+      <div className="flex items-start gap-3">
+        <div className="h-10 w-10 rounded-lg bg-purple-500/20 flex items-center justify-center shrink-0">
+          <FolderOpen className="h-5 w-5 text-purple-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="font-mono font-bold text-white text-lg">{project.code}</p>
+              <p className="text-sm text-zinc-300 mt-0.5">{project.name}</p>
+            </div>
+            <StatusBadge status="active" />
+          </div>
+          <div className="flex items-center gap-1.5 mt-3 text-xs text-zinc-500">
+            <Calendar className="h-3.5 w-3.5" />
+            {formatDate(project.created_at)}
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
@@ -171,26 +201,26 @@ export default function ProjectsPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-4 sm:space-y-6 lg:space-y-8">
       {/* Header */}
-      <div className="glass border-zinc-800/50 rounded-lg p-6">
-        <div className="flex items-center justify-between">
+      <div className="glass border-zinc-800/50 rounded-lg p-4 sm:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-semibold text-white mb-2">
+            <h1 className="text-2xl sm:text-3xl font-semibold text-white mb-1 sm:mb-2">
               Projects
             </h1>
-            <p className="text-zinc-400">
+            <p className="text-sm sm:text-base text-zinc-400">
               Manage your media production projects
             </p>
           </div>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
-              <Button>
+              <Button className="w-full sm:w-auto">
                 <Plus className="h-4 w-4 mr-2" />
                 Create Project
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="mx-4 sm:mx-auto max-w-md">
               <DialogHeader>
                 <DialogTitle>Create New Project</DialogTitle>
                 <DialogDescription>
@@ -210,6 +240,7 @@ export default function ProjectsPage() {
                       }
                       required
                       maxLength={10}
+                      className="uppercase"
                     />
                     <p className="text-xs text-zinc-500">
                       Short code used in filenames (e.g., PRT, ABC)
@@ -228,15 +259,16 @@ export default function ProjectsPage() {
                     />
                   </div>
                 </div>
-                <DialogFooter>
+                <DialogFooter className="flex-col sm:flex-row gap-2 sm:gap-0">
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => setDialogOpen(false)}
+                    className="w-full sm:w-auto"
                   >
                     Cancel
                   </Button>
-                  <Button type="submit" disabled={submitting}>
+                  <Button type="submit" disabled={submitting} className="w-full sm:w-auto">
                     {submitting ? "Creating..." : "Create Project"}
                   </Button>
                 </DialogFooter>
@@ -246,22 +278,26 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      {/* Projects Table */}
+      {/* Projects */}
       <Card className="glass border-zinc-800/50">
-        <CardHeader>
-          <CardTitle className="text-white">All Projects</CardTitle>
+        <CardHeader className="px-4 sm:px-6">
+          <CardTitle className="text-white text-base sm:text-lg">
+            All Projects
+            <span className="text-zinc-500 font-normal text-sm ml-2">
+              ({projects.length})
+            </span>
+          </CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="px-4 sm:px-6 pb-4 sm:pb-6">
           {loading ? (
-            <div className="space-y-4">
+            <div className="space-y-3 sm:space-y-4">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-12 flex-1" />
-                </div>
+                <Skeleton key={i} className="h-20 sm:h-12 w-full" />
               ))}
             </div>
           ) : projects.length === 0 ? (
             <div className="text-center py-12">
+              <FolderOpen className="h-12 w-12 text-zinc-600 mx-auto mb-3" />
               <p className="text-zinc-400 mb-4">No projects yet</p>
               <Button onClick={() => setDialogOpen(true)}>
                 <Plus className="h-4 w-4 mr-2" />
@@ -269,47 +305,58 @@ export default function ProjectsPage() {
               </Button>
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-zinc-800/50 hover:bg-zinc-900/30">
-                  <TableHead className="text-zinc-400">Project Code</TableHead>
-                  <TableHead className="text-zinc-400">Name</TableHead>
-                  <TableHead className="text-zinc-400">Status</TableHead>
-                  <TableHead className="text-zinc-400">Created Date</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {projects.map((project, index) => (
-                  <motion.tr
-                    key={project.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2, delay: index * 0.05 }}
-                    className="border-zinc-800/50 hover:bg-zinc-900/30 transition-colors"
-                  >
-                    <TableCell className="font-mono font-semibold text-white">
-                      {project.code}
-                    </TableCell>
-                    <TableCell className="text-zinc-300">
-                      {project.name}
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status="active" />
-                    </TableCell>
-                    <TableCell className="text-zinc-400">
-                      <div className="flex items-center gap-2">
-                        <Calendar className="h-4 w-4" />
-                        {formatDate(project.created_at)}
-                      </div>
-                    </TableCell>
-                  </motion.tr>
+            <>
+              {/* Mobile Card View */}
+              <div className="sm:hidden space-y-3">
+                {projects.map((project) => (
+                  <ProjectCard key={project.id} project={project} formatDate={formatDate} />
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="hidden sm:block overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-zinc-800/50 hover:bg-zinc-900/30">
+                      <TableHead className="text-zinc-400">Project Code</TableHead>
+                      <TableHead className="text-zinc-400">Name</TableHead>
+                      <TableHead className="text-zinc-400">Status</TableHead>
+                      <TableHead className="text-zinc-400">Created Date</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {projects.map((project, index) => (
+                      <motion.tr
+                        key={project.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, delay: index * 0.05 }}
+                        className="border-zinc-800/50 hover:bg-zinc-900/30 transition-colors"
+                      >
+                        <TableCell className="font-mono font-semibold text-white">
+                          {project.code}
+                        </TableCell>
+                        <TableCell className="text-zinc-300">
+                          {project.name}
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge status="active" />
+                        </TableCell>
+                        <TableCell className="text-zinc-400">
+                          <div className="flex items-center gap-2">
+                            <Calendar className="h-4 w-4" />
+                            {formatDate(project.created_at)}
+                          </div>
+                        </TableCell>
+                      </motion.tr>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
     </div>
   );
 }
-

@@ -46,15 +46,15 @@ function MetricCard({
   if (loading) {
     return (
       <Card className={cn("glass border-zinc-800/50", className)}>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium text-zinc-400">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2 p-3 sm:p-6">
+          <CardTitle className="text-xs sm:text-sm font-medium text-zinc-400">
             {title}
           </CardTitle>
           <div className="text-zinc-600">{icon}</div>
         </CardHeader>
-        <CardContent>
-          <Skeleton className="h-8 w-24 mb-2" />
-          {subtitle && <Skeleton className="h-4 w-32" />}
+        <CardContent className="p-3 sm:p-6 pt-0">
+          <Skeleton className="h-6 sm:h-8 w-16 sm:w-24 mb-1 sm:mb-2" />
+          {subtitle && <Skeleton className="h-3 sm:h-4 w-20 sm:w-32" />}
         </CardContent>
       </Card>
     );
@@ -74,16 +74,16 @@ function MetricCard({
         )}
         onClick={onClick}
       >
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium text-zinc-400">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2 p-3 sm:p-6">
+          <CardTitle className="text-xs sm:text-sm font-medium text-zinc-400 truncate pr-2">
             {title}
           </CardTitle>
-          <div className="text-zinc-600">{icon}</div>
+          <div className="text-zinc-600 shrink-0">{icon}</div>
         </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold text-white mb-1">{value}</div>
+        <CardContent className="p-3 sm:p-6 pt-0">
+          <div className="text-lg sm:text-2xl font-semibold text-white mb-0.5 sm:mb-1">{value}</div>
           {subtitle && (
-            <p className="text-xs text-zinc-500">{subtitle}</p>
+            <p className="text-[10px] sm:text-xs text-zinc-500 truncate">{subtitle}</p>
           )}
           {trend && (
             <p
@@ -246,7 +246,7 @@ export function BentoGrid() {
   };
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+    <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
       <MetricCard
         title="Total Deliveries"
         value={stats.totalDeliveries}
