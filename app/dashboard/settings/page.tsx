@@ -285,10 +285,48 @@ export default function SettingsPage() {
                 Manage your subscription and payment methods
               </CardDescription>
             </CardHeader>
-            <CardContent>
-              <p className="text-sm text-zinc-400">
-                Billing settings will be available soon.
-              </p>
+            <CardContent className="space-y-4">
+              {organization?.subscription_tier !== "free" ? (
+                 <div className="flex flex-col gap-4">
+                    <div className="p-4 rounded-lg bg-zinc-900/50 border border-zinc-800">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-zinc-400">Current Plan</span>
+                            <span className="font-medium text-white capitalize">{organization?.subscription_tier}</span>
+                        </div>
+                        <p className="text-xs text-zinc-500">
+                            Managed via Stripe
+                        </p>
+                    </div>
+                    <Button 
+                        variant="outline" 
+                        onClick={async () => {
+                            try {
+                                const res = await fetch("/api/stripe/customer-portal", { method: "POST" });
+                                if (!res.ok) throw new Error("Failed to load portal");
+                                const { url } = await res.json();
+                                window.location.href = url;
+                            } catch (error) {
+                                toast({
+                                    title: "Error",
+                                    description: "Could not access billing portal",
+                                    variant: "destructive"
+                                });
+                            }
+                        }}
+                    >
+                        Manage Subscription
+                    </Button>
+                 </div>
+              ) : (
+                  <div className="space-y-4">
+                    <p className="text-sm text-zinc-400">
+                        You are currently on the Free plan. Upgrade to unlock more features.
+                    </p>
+                    <Button asChild>
+                        <a href="/dashboard/pricing">View Plans</a>
+                    </Button>
+                  </div>
+              )}
             </CardContent>
           </Card>
         </div>

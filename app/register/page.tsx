@@ -63,9 +63,15 @@ export default function RegisterPage() {
       router.push("/onboarding");
       router.refresh();
     } catch (error: any) {
+      // Check for server configuration error
+      const isConfigError = error.message?.includes("Server configuration") || 
+                            error.message?.includes("SUPABASE_SERVICE_ROLE_KEY");
+      
       toast({
-        title: "Registration Failed",
-        description: error.message || "Failed to create account",
+        title: isConfigError ? "Server Configuration Required" : "Registration Failed",
+        description: isConfigError 
+          ? "The server is not properly configured. Please add SUPABASE_SERVICE_ROLE_KEY to your .env.local file. See README.md for instructions."
+          : (error.message || "Failed to create account"),
         variant: "destructive",
       });
     } finally {

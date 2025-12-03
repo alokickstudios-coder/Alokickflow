@@ -32,14 +32,20 @@ export function DriveConnect() {
   };
 
   const disconnect = async () => {
-    // Clear cookies by calling an API or just remove from browser
-    document.cookie = "google_access_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-    document.cookie = "google_refresh_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-    setConnected(false);
-    toast({
-      title: "Disconnected",
-      description: "Google Drive has been disconnected",
-    });
+    try {
+      await fetch("/api/google/auth/disconnect", { method: "POST" });
+      setConnected(false);
+      toast({
+        title: "Disconnected",
+        description: "Google Drive has been disconnected",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to disconnect Google Drive",
+        variant: "destructive",
+      });
+    }
   };
 
   return (

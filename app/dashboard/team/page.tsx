@@ -16,6 +16,8 @@ import {
   Music,
   Subtitles,
   Video,
+  Clock,
+  XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,6 +77,14 @@ interface TeamMember {
   created_at: string;
 }
 
+interface Invitation {
+  id: string;
+  email: string;
+  role: TeamRole;
+  status: "pending" | "accepted" | "expired";
+  created_at: string;
+}
+
 const roleColors: Record<TeamRole, string> = {
   admin: "bg-purple-500/20 text-purple-400 border-purple-500/30",
   manager: "bg-blue-500/20 text-blue-400 border-blue-500/30",
@@ -110,6 +120,7 @@ const roleIcons: Record<TeamRole, React.ReactNode> = {
 
 export default function TeamPage() {
   const [members, setMembers] = useState<TeamMember[]>([]);
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [filteredMembers, setFilteredMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -154,22 +165,37 @@ export default function TeamPage() {
 
       if (!profile?.organization_id) return;
 
-      const { data } = await supabase
+      // Fetch Members
+      const { data: membersData } = await supabase
         .from("profiles")
         .select("id, full_name, role, created_at")
         .eq("organization_id", profile.organization_id)
         .neq("role", "vendor")
         .order("created_at", { ascending: false });
 
-      if (data) {
-        // Get emails from auth (in production, you'd use a server function)
-        const membersWithEmail = data.map((m) => ({
+      if (membersData) {
+        // Get emails from auth (in production, you'd use a server function or join if possible)
+        // Here we mock it as before, but ideally this comes from a secure view or function
+        const membersWithEmail = membersData.map((m) => ({
           ...m,
-          email: `user-${m.id.slice(0, 8)}@example.com`, // Placeholder
+          email: `user-${m.id.slice(0, 8)}@example.com`, // Placeholder until we have real email linking
         }));
         setMembers(membersWithEmail as TeamMember[]);
         setFilteredMembers(membersWithEmail as TeamMember[]);
       }
+
+      // Fetch Invitations
+      const { data: invitationsData } = await supabase
+        .from("invitations")
+        .select("*")
+        .eq("organization_id", profile.organization_id)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
+      
+      if (invitationsData) {
+        setInvitations(invitationsData as Invitation[]);
+      }
+
     } catch (error) {
       console.error("Error fetching team:", error);
     } finally {
@@ -182,8 +208,17 @@ export default function TeamPage() {
     setInviting(true);
 
     try {
-      // In production, you'd send an invite email via Edge Function
-      // For now, we'll show a success message
+      const response = await fetch("/api/team/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(inviteData),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Failed to send invitation");
+      }
+
       toast({
         title: "Invitation Sent",
         description: `An invitation has been sent to ${inviteData.email}`,
@@ -192,6 +227,7 @@ export default function TeamPage() {
 
       setInviteDialogOpen(false);
       setInviteData({ email: "", role: "operator" });
+      fetchTeamMembers();
     } catch (error: any) {
       toast({
         title: "Error",
@@ -200,6 +236,33 @@ export default function TeamPage() {
       });
     } finally {
       setInviting(false);
+    }
+  };
+
+  const handleRevokeInvite = async (id: string) => {
+    if (!confirm("Are you sure you want to revoke this invitation?")) return;
+
+    try {
+        const { error } = await supabase
+            .from("invitations")
+            .delete()
+            .eq("id", id);
+
+        if (error) throw error;
+
+        setInvitations(prev => prev.filter(i => i.id !== id));
+
+        toast({
+            title: "Invitation Revoked",
+            description: "The invitation has been cancelled.",
+            variant: "success"
+        });
+    } catch (error: any) {
+        toast({
+            title: "Error",
+            description: error.message || "Failed to revoke invitation",
+            variant: "destructive"
+        });
     }
   };
 
@@ -234,7 +297,7 @@ export default function TeamPage() {
     if (!confirm("Are you sure you want to remove this team member?")) return;
 
     try {
-      // In production, you'd also remove from auth.users
+      // In production, you'd also remove from auth.users or disable access
       const { error } = await supabase
         .from("profiles")
         .delete()
@@ -259,7 +322,7 @@ export default function TeamPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -275,7 +338,7 @@ export default function TeamPage() {
               Invite Member
             </Button>
           </DialogTrigger>
-          <DialogContent className="glass border-zinc-800/50">
+          <DialogContent className="glass border-zinc-800/50 max-h-[85vh] overflow-y-auto custom-scrollbar">
             <DialogHeader>
               <DialogTitle className="text-white">Invite Team Member</DialogTitle>
               <DialogDescription>
@@ -364,10 +427,68 @@ export default function TeamPage() {
         </Dialog>
       </div>
 
-      {/* Filters */}
-      <Card className="glass border-zinc-800/50">
-        <CardContent className="p-4">
-          <div className="flex items-center gap-4">
+      {/* Pending Invitations */}
+      {invitations.length > 0 && (
+        <Card className="glass border-zinc-800/50">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+                <Mail className="h-5 w-5 text-blue-400" />
+                Pending Invitations ({invitations.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <Table>
+                <TableHeader>
+                    <TableRow className="border-zinc-800/50">
+                        <TableHead className="text-zinc-400">Email</TableHead>
+                        <TableHead className="text-zinc-400">Role</TableHead>
+                        <TableHead className="text-zinc-400">Sent</TableHead>
+                        <TableHead className="text-zinc-400 text-right">Actions</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {invitations.map((invite) => (
+                        <TableRow key={invite.id} className="border-zinc-800/50 hover:bg-zinc-900/30">
+                            <TableCell className="text-white font-medium">{invite.email}</TableCell>
+                            <TableCell>
+                                <span
+                                    className={cn(
+                                    "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border",
+                                    roleColors[invite.role]
+                                    )}
+                                >
+                                    {roleIcons[invite.role]}
+                                    {roleLabels[invite.role]}
+                                </span>
+                            </TableCell>
+                            <TableCell className="text-zinc-400">
+                                <div className="flex items-center gap-2">
+                                    <Clock className="h-3 w-3" />
+                                    {new Date(invite.created_at).toLocaleDateString()}
+                                </div>
+                            </TableCell>
+                            <TableCell className="text-right">
+                                <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    onClick={() => handleRevokeInvite(invite.id)}
+                                    className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                                >
+                                    <XCircle className="h-4 w-4 mr-2" />
+                                    Revoke
+                                </Button>
+                            </TableCell>
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Team Members */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-4">
             <SearchInput
               placeholder="Search by name or email..."
               value={searchQuery}
@@ -392,154 +513,151 @@ export default function TeamPage() {
                 <SelectItem value="subtitling">Subtitling/Video</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      {/* Team Table */}
-      <Card className="glass border-zinc-800/50">
-        <CardHeader>
-          <CardTitle className="text-white">
-            Team Members ({filteredMembers.length})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="p-6 space-y-4">
-              {[...Array(5)].map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full" />
-              ))}
-            </div>
-          ) : filteredMembers.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-zinc-400">
-                {searchQuery || roleFilter !== "all"
-                  ? "No members match your filters"
-                  : "No team members yet"}
-              </p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-zinc-800/50">
-                  <TableHead className="text-zinc-400">Member</TableHead>
-                  <TableHead className="text-zinc-400">Role</TableHead>
-                  <TableHead className="text-zinc-400">Joined</TableHead>
-                  <TableHead className="text-zinc-400 text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredMembers.map((member, index) => (
-                  <motion.tr
-                    key={member.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: index * 0.05 }}
-                    className="border-zinc-800/50 hover:bg-zinc-900/30"
-                  >
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-full bg-gradient-to-br from-zinc-700 to-zinc-900 flex items-center justify-center text-white font-medium">
-                          {member.full_name?.[0]?.toUpperCase() || "?"}
-                        </div>
-                        <div>
-                          <p className="font-medium text-white">
-                            {member.full_name || "Unknown"}
-                          </p>
-                          <p className="text-sm text-zinc-400">{member.email}</p>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <span
-                        className={cn(
-                          "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border",
-                          roleColors[member.role]
-                        )}
-                      >
-                        {roleIcons[member.role]}
-                        {roleLabels[member.role]}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-zinc-400">
-                      {new Date(member.created_at).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="sm">
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="glass border-zinc-800/50 w-56">
-                          <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium">
-                            Change Role
-                          </div>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(member.id, "admin")}
-                          >
-                            <Crown className="h-4 w-4 mr-2 text-purple-400" />
-                            Make Admin
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(member.id, "manager")}
-                          >
-                            <Shield className="h-4 w-4 mr-2 text-blue-400" />
-                            Make Manager
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(member.id, "operator")}
-                          >
-                            <Edit className="h-4 w-4 mr-2 text-green-400" />
-                            Make Operator
-                          </DropdownMenuItem>
-                          <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium border-t border-zinc-800 mt-1 pt-2">
-                            Assign to Team
-                          </div>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(member.id, "translation")}
-                          >
-                            <Languages className="h-4 w-4 mr-2 text-cyan-400" />
-                            Translation Team
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(member.id, "dubbing")}
-                          >
-                            <Mic className="h-4 w-4 mr-2 text-pink-400" />
-                            Dubbing Team
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(member.id, "mixing")}
-                          >
-                            <Music className="h-4 w-4 mr-2 text-amber-400" />
-                            Mixing Team
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(member.id, "subtitling")}
-                          >
-                            <Subtitles className="h-4 w-4 mr-2 text-indigo-400" />
-                            Subtitling / Video Editing
-                          </DropdownMenuItem>
-                          <div className="border-t border-zinc-800 mt-1 pt-1">
-                            <DropdownMenuItem
-                              onClick={() => handleRemoveMember(member.id)}
-                              className="text-red-400"
-                            >
-                              <Trash2 className="h-4 w-4 mr-2" />
-                              Remove Member
-                            </DropdownMenuItem>
-                          </div>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </motion.tr>
+        <Card className="glass border-zinc-800/50">
+            <CardHeader>
+            <CardTitle className="text-white">
+                Team Members ({filteredMembers.length})
+            </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+            {loading ? (
+                <div className="p-6 space-y-4">
+                {[...Array(5)].map((_, i) => (
+                    <Skeleton key={i} className="h-12 w-full" />
                 ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+                </div>
+            ) : filteredMembers.length === 0 ? (
+                <div className="text-center py-12">
+                <p className="text-zinc-400">
+                    {searchQuery || roleFilter !== "all"
+                    ? "No members match your filters"
+                    : "No team members yet"}
+                </p>
+                </div>
+            ) : (
+                <Table>
+                <TableHeader>
+                    <TableRow className="border-zinc-800/50">
+                    <TableHead className="text-zinc-400">Member</TableHead>
+                    <TableHead className="text-zinc-400">Role</TableHead>
+                    <TableHead className="text-zinc-400">Joined</TableHead>
+                    <TableHead className="text-zinc-400 text-right">Actions</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {filteredMembers.map((member, index) => (
+                    <motion.tr
+                        key={member.id}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: index * 0.05 }}
+                        className="border-zinc-800/50 hover:bg-zinc-900/30"
+                    >
+                        <TableCell>
+                        <div className="flex items-center gap-3">
+                            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-zinc-700 to-zinc-900 flex items-center justify-center text-white font-medium">
+                            {member.full_name?.[0]?.toUpperCase() || "?"}
+                            </div>
+                            <div>
+                            <p className="font-medium text-white">
+                                {member.full_name || "Unknown"}
+                            </p>
+                            <p className="text-sm text-zinc-400">{member.email}</p>
+                            </div>
+                        </div>
+                        </TableCell>
+                        <TableCell>
+                        <span
+                            className={cn(
+                            "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border",
+                            roleColors[member.role]
+                            )}
+                        >
+                            {roleIcons[member.role]}
+                            {roleLabels[member.role]}
+                        </span>
+                        </TableCell>
+                        <TableCell className="text-zinc-400">
+                        {new Date(member.created_at).toLocaleDateString()}
+                        </TableCell>
+                        <TableCell className="text-right">
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm">
+                                <MoreVertical className="h-4 w-4" />
+                            </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="glass border-zinc-800/50 w-56">
+                            <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium">
+                                Change Role
+                            </div>
+                            <DropdownMenuItem
+                                onClick={() => handleChangeRole(member.id, "admin")}
+                            >
+                                <Crown className="h-4 w-4 mr-2 text-purple-400" />
+                                Make Admin
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => handleChangeRole(member.id, "manager")}
+                            >
+                                <Shield className="h-4 w-4 mr-2 text-blue-400" />
+                                Make Manager
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => handleChangeRole(member.id, "operator")}
+                            >
+                                <Edit className="h-4 w-4 mr-2 text-green-400" />
+                                Make Operator
+                            </DropdownMenuItem>
+                            <div className="px-2 py-1.5 text-xs text-zinc-500 font-medium border-t border-zinc-800 mt-1 pt-2">
+                                Assign to Team
+                            </div>
+                            <DropdownMenuItem
+                                onClick={() => handleChangeRole(member.id, "translation")}
+                            >
+                                <Languages className="h-4 w-4 mr-2 text-cyan-400" />
+                                Translation Team
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => handleChangeRole(member.id, "dubbing")}
+                            >
+                                <Mic className="h-4 w-4 mr-2 text-pink-400" />
+                                Dubbing Team
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => handleChangeRole(member.id, "mixing")}
+                            >
+                                <Music className="h-4 w-4 mr-2 text-amber-400" />
+                                Mixing Team
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => handleChangeRole(member.id, "subtitling")}
+                            >
+                                <Subtitles className="h-4 w-4 mr-2 text-indigo-400" />
+                                Subtitling / Video Editing
+                            </DropdownMenuItem>
+                            <div className="border-t border-zinc-800 mt-1 pt-1">
+                                <DropdownMenuItem
+                                onClick={() => handleRemoveMember(member.id)}
+                                className="text-red-400"
+                                >
+                                <Trash2 className="h-4 w-4 mr-2" />
+                                Remove Member
+                                </DropdownMenuItem>
+                            </div>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                        </TableCell>
+                    </motion.tr>
+                    ))}
+                </TableBody>
+                </Table>
+            )}
+            </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
-

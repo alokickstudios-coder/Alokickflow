@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-// Use service role key to bypass RLS
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  {
+function getAdminClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return null;
+  }
+  
+  return createClient(supabaseUrl, supabaseServiceKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
     },
-  }
-);
+  });
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,6 +29,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const supabaseAdmin = getAdminClient();
+    
+    if (!supabaseAdmin) {
+      return NextResponse.json(
+        { 
+          error: "Server configuration error",
+          details: "SUPABASE_SERVICE_ROLE_KEY is not configured. Please contact the administrator."
+        },
+        { status: 500 }
+      );
+    }
+
     // Step 1: Try to create auth user using admin API
     let userId: string;
     
@@ -34,6 +50,9 @@ export async function POST(request: NextRequest) {
         email,
         password,
         email_confirm: true,
+        user_metadata: {
+          full_name: fullName,
+        },
       });
 
       if (authError) throw authError;
@@ -41,7 +60,7 @@ export async function POST(request: NextRequest) {
       
       userId = authData.user.id;
     } catch (adminError: any) {
-      console.log("Admin API not available, trying signUp:", adminError.message);
+      console.log("Admin API error, trying signUp:", adminError.message);
       
       // Fallback to regular signUp
       const { data: signUpData, error: signUpError } = await supabaseAdmin.auth.signUp({
@@ -83,6 +102,10 @@ export async function POST(request: NextRequest) {
 
     if (orgError) {
       console.error("Org error:", orgError);
+      // Try to clean up auth user
+      try {
+        await supabaseAdmin.auth.admin.deleteUser(userId);
+      } catch {}
       return NextResponse.json(
         { error: "Failed to create organization: " + orgError.message },
         { status: 500 }
@@ -102,7 +125,10 @@ export async function POST(request: NextRequest) {
     if (profileError) {
       console.error("Profile error:", profileError);
       // Try to clean up
-      await supabaseAdmin.from("organizations").delete().eq("id", orgData.id);
+      try {
+        await supabaseAdmin.from("organizations").delete().eq("id", orgData.id);
+        await supabaseAdmin.auth.admin.deleteUser(userId);
+      } catch {}
       return NextResponse.json(
         { error: "Failed to create profile: " + profileError.message },
         { status: 500 }
@@ -124,4 +150,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

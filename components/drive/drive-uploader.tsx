@@ -49,6 +49,8 @@ export function DriveUploader({
   const [isOpen, setIsOpen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [copied, setCopied] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -88,37 +90,68 @@ export function DriveUploader({
     if (files.length === 0) return;
 
     setUploading(true);
+    setCurrentFileIndex(0);
+    setUploadProgress(0);
     const uploaded: UploadedFile[] = [];
 
     try {
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("fileName", file.name);
-        if (folderId) {
-          formData.append("folderId", folderId);
-        }
-
-        const response = await fetch("/api/google/drive/upload", {
-          method: "POST",
-          body: formData,
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setCurrentFileIndex(i + 1);
+        
+        // Step 1: Initialize upload session
+        const initResponse = await fetch("/api/google/drive/upload/init", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                fileName: file.name,
+                fileType: file.type,
+                folderId
+            })
         });
 
-        const data = await response.json();
-
-        if (!response.ok) {
-          if (response.status === 401) {
-            toast({
-              title: "Not Connected",
-              description: "Please connect Google Drive in Settings first.",
-              variant: "destructive",
-            });
-            return;
-          }
-          throw new Error(data.error);
+        if (!initResponse.ok) {
+             if (initResponse.status === 401) {
+                throw new Error("Please connect Google Drive in Settings first.");
+             }
+             const errorData = await initResponse.json();
+             throw new Error(errorData.error || "Failed to initialize upload");
         }
 
-        uploaded.push(data.file);
+        const { uploadUrl } = await initResponse.json();
+
+        // Step 2: Upload directly to Google
+        // Note: using XHR to track progress if needed, but fetch is simpler
+        const uploadResponse = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: {
+                "Content-Type": file.type,
+            },
+            body: file
+        });
+
+        if (!uploadResponse.ok) {
+            throw new Error(`Failed to upload ${file.name}`);
+        }
+
+        const driveFile = await uploadResponse.json();
+
+        // Step 3: Finalize (permissions etc)
+        const finishResponse = await fetch("/api/google/drive/upload/finish", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                fileId: driveFile.id
+            })
+        });
+
+        if (!finishResponse.ok) {
+             console.warn("Failed to finalize upload permissions");
+             // We still consider it uploaded
+        } else {
+            const finishData = await finishResponse.json();
+            uploaded.push(finishData.file);
+        }
       }
 
       setUploadedFiles(uploaded);
@@ -134,6 +167,7 @@ export function DriveUploader({
         onUploadComplete(uploaded);
       }
     } catch (error: any) {
+      console.error(error);
       toast({
         title: "Upload Failed",
         description: error.message,
@@ -164,7 +198,7 @@ export function DriveUploader({
           {buttonText}
         </Button>
       </DialogTrigger>
-      <DialogContent className="glass border-zinc-800/50 max-w-lg">
+      <DialogContent className="glass border-zinc-800/50 max-w-lg max-h-[85vh] overflow-y-auto custom-scrollbar">
         <DialogHeader>
           <DialogTitle className="text-white flex items-center gap-2">
             <HardDrive className="h-5 w-5" />
@@ -281,7 +315,7 @@ export function DriveUploader({
                 {uploading ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Uploading...
+                    Uploading {currentFileIndex}/{files.length}...
                   </>
                 ) : (
                   <>
@@ -297,4 +331,3 @@ export function DriveUploader({
     </Dialog>
   );
 }
-

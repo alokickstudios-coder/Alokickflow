@@ -105,8 +105,9 @@ export async function GET(request: NextRequest) {
     };
 
     // 4. Mark stale processing jobs as failed
-    const oneHourAgo = new Date();
-    oneHourAgo.setHours(oneHourAgo.getHours() - 1);
+    // Increased timeout to 24 hours to account for large file uploads and long processing jobs
+    const twentyFourHoursAgo = new Date();
+    twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
 
     const { data: staleDeliveries, error: staleError } = await supabase
       .from("deliveries")
@@ -114,11 +115,11 @@ export async function GET(request: NextRequest) {
         status: "qc_failed",
         qc_report: {
           status: "failed",
-          errors: [{ type: "Timeout", message: "Processing timed out" }],
+          errors: [{ type: "Timeout", message: "Processing/Upload timed out after 24 hours" }],
         },
       })
       .in("status", ["processing", "uploading"])
-      .lt("updated_at", oneHourAgo.toISOString())
+      .lt("updated_at", twentyFourHoursAgo.toISOString())
       .select("id");
 
     if (staleError) {

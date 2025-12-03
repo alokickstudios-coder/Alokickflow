@@ -221,7 +221,7 @@ export default function ProjectsPage() {
                 Create Project
               </Button>
             </DialogTrigger>
-            <DialogContent className="mx-4 sm:mx-auto max-w-md">
+            <DialogContent className="mx-4 sm:mx-auto max-w-md max-h-[85vh] overflow-y-auto custom-scrollbar">
               <DialogHeader>
                 <DialogTitle>Create New Project</DialogTitle>
                 <DialogDescription>
