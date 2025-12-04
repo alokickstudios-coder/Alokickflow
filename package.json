@@ -38,6 +38,7 @@
     "next": "14.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "resend": "^6.5.2",
     "stripe": "^14.10.0",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",

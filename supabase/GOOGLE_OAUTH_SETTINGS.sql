@@ -48,3 +48,4 @@ FROM app_settings
 LIMIT 1;
 
 
+

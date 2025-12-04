@@ -133,3 +133,4 @@ SELECT 'vendor_team_members', count(*) FROM vendor_team_members
 UNION ALL  
 SELECT 'drive_assignments', count(*) FROM drive_assignments;
 
+

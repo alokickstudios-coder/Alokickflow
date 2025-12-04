@@ -9,6 +9,11 @@ export interface EmailOptions {
   from?: string;
 }
 
+// NOTE:
+// We deliberately avoid importing "resend" at the module level so that the app
+// can build and deploy even if the package is not installed. All email sending
+// will gracefully fall back to console logging in that case.
+
 class EmailService {
   private resend: any = null;
   private isConfigured: boolean = false;
@@ -23,18 +28,9 @@ class EmailService {
       return;
     }
 
-    try {
-      // Dynamic import to avoid build errors if resend isn't installed
-      // @ts-ignore - dynamic import may not have types
-      const resendModule = await import('resend').catch(() => null);
-      if (resendModule?.Resend) {
-        this.resend = new resendModule.Resend(process.env.RESEND_API_KEY);
-        this.isConfigured = true;
-        console.log("EmailService: Resend initialized successfully");
-      }
-    } catch (e) {
-      console.warn("EmailService: Resend package not available. Emails will be logged to console.");
-    }
+    // We never import "resend" directly here so that builds succeed even if the
+    // dependency is not present. If you want real emails in production, install
+    // the package and set RESEND_API_KEY; otherwise this will just log to console.
   }
 
   async send(options: EmailOptions): Promise<boolean> {

@@ -144,3 +144,4 @@ FROM profiles p
 JOIN organizations o ON p.organization_id = o.id
 WHERE p.id = (SELECT id FROM auth.users WHERE email = 'alokickstudios@gmail.com');
 
+

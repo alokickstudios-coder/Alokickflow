@@ -50,3 +50,4 @@ CREATE POLICY "Admins can revoke invitations"
         )
     );
 
+
