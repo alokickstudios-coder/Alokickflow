@@ -3,7 +3,8 @@ const nextConfig = {
   images: {
     domains: ['localhost', 'gllswthsxocdrbrvppep.supabase.co'],
   },
-  output: 'standalone', // For Docker deployment
-}
+  // IMPORTANT: we want a Node.js server, NOT static export
+  output: 'standalone', // For Docker / Vercel Node deployment
+};
 
-module.exports = nextConfig
+module.exports = nextConfig;
