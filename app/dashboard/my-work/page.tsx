@@ -10,10 +10,20 @@ import {
   AlertCircle,
   Calendar,
   FileText,
+  RefreshCw,
+  User,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -26,11 +36,22 @@ interface Assignment {
   status: string;
   due_date: string | null;
   created_at: string;
-  project: {
+  vendor?: {
+    id: string;
+    full_name: string;
+    email?: string;
+  } | null;
+  project?: {
     id: string;
     name: string;
     code: string;
   } | null;
+}
+
+interface Vendor {
+  id: string;
+  full_name: string;
+  email?: string;
 }
 
 const statusConfig: Record<string, { label: string; color: string; icon: any; bgColor: string }> = {
@@ -52,6 +73,12 @@ const statusConfig: Record<string, { label: string; color: string; icon: any; bg
     bgColor: "bg-green-500/10 border-green-500/20",
     icon: CheckCircle2 
   },
+  on_hold: { 
+    label: "On Hold", 
+    color: "text-orange-400", 
+    bgColor: "bg-orange-500/10 border-orange-500/20",
+    icon: Clock 
+  },
   cancelled: { 
     label: "Cancelled", 
     color: "text-zinc-400", 
@@ -62,44 +89,75 @@ const statusConfig: Record<string, { label: string; color: string; icon: any; bg
 
 export default function MyWorkPage() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedVendor, setSelectedVendor] = useState<string>("all");
+  const [userRole, setUserRole] = useState<string>("admin");
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
-    fetchMyAssignments();
+    initPage();
   }, []);
 
-  const fetchMyAssignments = async () => {
+  useEffect(() => {
+    if (organizationId) {
+      fetchAssignments();
+    }
+  }, [selectedVendor, organizationId]);
+
+  const initPage = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Fetch assignments for this vendor
-      // Note: RLS ensures vendors only see their own assignments
-      // Client info (client_name, client_email) is NOT selected - kept hidden
-      const { data, error } = await supabase
-        .from("drive_assignments")
-        .select(`
-          id,
-          display_name,
-          description,
-          original_drive_link,
-          status,
-          due_date,
-          created_at,
-          project:projects(id, name, code)
-        `)
-        .eq("vendor_id", user.id)
-        .order("created_at", { ascending: false });
+      setUserEmail(user.email || null);
 
-      if (error) throw error;
-      if (data) {
-        // Transform data to handle Supabase's array return for single relations
-        const transformedData = data.map((item: any) => ({
-          ...item,
-          project: Array.isArray(item.project) ? item.project[0] : item.project,
-        }));
-        setAssignments(transformedData);
+      // Get user's profile and role
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("organization_id, role")
+        .eq("id", user.id)
+        .single();
+
+      if (profile) {
+        setOrganizationId(profile.organization_id);
+        setUserRole(profile.role);
+      }
+
+      // Fetch vendors for filter dropdown (admin only)
+      if (profile?.role === 'admin') {
+        const response = await fetch(`/api/vendors/create?organizationId=${profile.organization_id}`);
+        if (response.ok) {
+          const data = await response.json();
+          setVendors(data.vendors || []);
+        }
+      }
+    } catch (error) {
+      console.error("Error initializing:", error);
+    }
+  };
+
+  const fetchAssignments = async () => {
+    try {
+      setLoading(true);
+      
+      let url = `/api/my-work?`;
+      
+      if (userRole === 'admin') {
+        url += `role=admin&organizationId=${organizationId}`;
+        if (selectedVendor && selectedVendor !== 'all') {
+          url += `&vendorId=${selectedVendor}`;
+        }
+      } else if (userEmail) {
+        url += `userEmail=${encodeURIComponent(userEmail)}`;
+      }
+
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        setAssignments(data.assignments || []);
       }
     } catch (error) {
       console.error("Error fetching assignments:", error);
@@ -108,14 +166,18 @@ export default function MyWorkPage() {
     }
   };
 
-  const updateMyStatus = async (id: string, status: string) => {
+  const updateStatus = async (id: string, status: string) => {
     try {
-      const { error } = await supabase
-        .from("drive_assignments")
-        .update({ status })
-        .eq("id", id);
+      const response = await fetch('/api/my-work', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignmentId: id, status }),
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error);
+      }
 
       setAssignments((prev) =>
         prev.map((a) => (a.id === id ? { ...a, status } : a))
@@ -123,7 +185,7 @@ export default function MyWorkPage() {
 
       toast({
         title: "Status Updated",
-        description: `Marked as ${status.replace("_", " ")}`,
+        description: `Assignment marked as ${status.replace("_", " ")}`,
         variant: "success",
       });
     } catch (error: any) {
@@ -135,22 +197,52 @@ export default function MyWorkPage() {
     }
   };
 
-  const pendingCount = assignments.filter((a) => a.status === "pending").length;
-  const inProgressCount = assignments.filter((a) => a.status === "in_progress").length;
-  const completedCount = assignments.filter((a) => a.status === "completed").length;
+  const filteredAssignments = selectedVendor === 'all' 
+    ? assignments 
+    : assignments.filter(a => a.vendor?.id === selectedVendor);
+
+  const pendingCount = filteredAssignments.filter((a) => a.status === "pending").length;
+  const inProgressCount = filteredAssignments.filter((a) => a.status === "in_progress").length;
+  const completedCount = filteredAssignments.filter((a) => a.status === "completed").length;
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-semibold text-white">My Work</h1>
-        <p className="text-zinc-400 mt-1">
-          View and manage your assigned projects
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold text-white">My Work</h1>
+          <p className="text-zinc-400 mt-1">
+            {userRole === 'admin' 
+              ? 'Manage and track all vendor assignments'
+              : 'View and manage your assigned projects'}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {userRole === 'admin' && vendors.length > 0 && (
+            <Select value={selectedVendor} onValueChange={setSelectedVendor}>
+              <SelectTrigger className="w-48">
+                <User className="h-4 w-4 mr-2" />
+                <SelectValue placeholder="Filter by vendor" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Vendors</SelectItem>
+                {vendors.map((vendor) => (
+                  <SelectItem key={vendor.id} value={vendor.id}>
+                    {vendor.full_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <Button variant="outline" size="sm" onClick={fetchAssignments}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card className="glass border-zinc-800/50">
           <CardContent className="p-4 flex items-center gap-4">
             <div className="h-12 w-12 rounded-xl bg-yellow-500/10 flex items-center justify-center">
@@ -193,20 +285,24 @@ export default function MyWorkPage() {
             <Skeleton key={i} className="h-48 w-full" />
           ))}
         </div>
-      ) : assignments.length === 0 ? (
+      ) : filteredAssignments.length === 0 ? (
         <Card className="glass border-zinc-800/50">
           <CardContent className="py-16 text-center">
             <FolderOpen className="h-16 w-16 text-zinc-600 mx-auto mb-4" />
-            <h3 className="text-xl font-medium text-white mb-2">No assignments yet</h3>
+            <h3 className="text-xl font-medium text-white mb-2">No assignments found</h3>
             <p className="text-zinc-400">
-              You'll see your assigned work here once an admin assigns projects to you.
+              {selectedVendor !== 'all' 
+                ? 'No assignments for the selected vendor.'
+                : userRole === 'admin'
+                  ? 'Assign work to vendors from the Assignments page.'
+                  : 'You\'ll see your assigned work here once an admin assigns projects to you.'}
             </p>
           </CardContent>
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {assignments.map((assignment, index) => {
-            const status = statusConfig[assignment.status];
+          {filteredAssignments.map((assignment, index) => {
+            const status = statusConfig[assignment.status] || statusConfig.pending;
             const StatusIcon = status?.icon || Clock;
             const isOverdue = assignment.due_date && new Date(assignment.due_date) < new Date() && assignment.status !== "completed";
 
@@ -234,15 +330,22 @@ export default function MyWorkPage() {
                           <CardTitle className="text-white text-lg">
                             {assignment.display_name}
                           </CardTitle>
-                          {assignment.project && (
-                            <p className="text-xs text-zinc-500">
-                              {assignment.project.code}
-                            </p>
-                          )}
+                          <div className="flex items-center gap-2 mt-1">
+                            {assignment.project && (
+                              <span className="text-xs text-zinc-500 bg-zinc-800/50 px-2 py-0.5 rounded">
+                                {assignment.project.code}
+                              </span>
+                            )}
+                            {userRole === 'admin' && assignment.vendor && (
+                              <span className="text-xs text-blue-400">
+                                → {assignment.vendor.full_name}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <span className={cn(
-                        "px-2 py-1 rounded text-xs font-medium",
+                        "px-2 py-1 rounded text-xs font-medium border",
                         status?.color,
                         status?.bgColor
                       )}>
@@ -285,11 +388,12 @@ export default function MyWorkPage() {
                         <ExternalLink className="h-4 w-4 mr-2" />
                         Open Files
                       </Button>
+                      
                       {assignment.status === "pending" && (
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => updateMyStatus(assignment.id, "in_progress")}
+                          onClick={() => updateStatus(assignment.id, "in_progress")}
                         >
                           Start
                         </Button>
@@ -298,8 +402,10 @@ export default function MyWorkPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => updateMyStatus(assignment.id, "completed")}
+                          className="bg-green-500/10 border-green-500/30 text-green-400 hover:bg-green-500/20"
+                          onClick={() => updateStatus(assignment.id, "completed")}
                         >
+                          <CheckCircle2 className="h-4 w-4 mr-1" />
                           Done
                         </Button>
                       )}
@@ -314,4 +420,3 @@ export default function MyWorkPage() {
     </div>
   );
 }
-

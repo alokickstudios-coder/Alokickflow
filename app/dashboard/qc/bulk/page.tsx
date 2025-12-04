@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { BulkQCUpload } from "@/components/qc/bulk-upload";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -36,6 +36,8 @@ export default function BulkQCPage() {
   const [results, setResults] = useState<BulkQCResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [subscriptionTier, setSubscriptionTier] = useState<"free" | "pro" | "enterprise" | null>(null);
+  const [qcCount, setQcCount] = useState(0);
 
   const fetchResults = async () => {
     try {
@@ -51,6 +53,17 @@ export default function BulkQCPage() {
 
       if (!profile?.organization_id) return;
 
+      // Fetch organization tier
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("subscription_tier")
+        .eq("id", profile.organization_id)
+        .single();
+
+      if (org?.subscription_tier) {
+        setSubscriptionTier(org.subscription_tier as "free" | "pro" | "enterprise");
+      }
+
       const { data: deliveries, error } = await supabase
         .from("deliveries")
         .select("*")
@@ -60,6 +73,8 @@ export default function BulkQCPage() {
         .limit(100);
 
       if (error) throw error;
+
+      setQcCount(deliveries?.length || 0);
 
       // Fetch projects
       const projectIds = [...new Set(deliveries?.map((d) => d.project_id) || [])];
@@ -125,6 +140,12 @@ export default function BulkQCPage() {
     return 0;
   };
 
+  const PRO_BULK_QC_LIMIT = 50;
+  const isFree = subscriptionTier === "free";
+  const isPro = subscriptionTier === "pro";
+  const isEnterprise = subscriptionTier === "enterprise";
+  const proLimitReached = isPro && qcCount >= PRO_BULK_QC_LIMIT;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -139,9 +160,60 @@ export default function BulkQCPage() {
       <Card className="glass border-zinc-800/50">
         <CardHeader>
           <CardTitle className="text-white">Upload Files for QC</CardTitle>
+          <CardDescription className="text-zinc-400">
+            Plan:{" "}
+            <span className="capitalize">
+              {subscriptionTier || "loading..."}
+            </span>
+            {isPro && (
+              <> • Used {qcCount}/{PRO_BULK_QC_LIMIT} bulk QC jobs</>
+            )}
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <BulkQCUpload onUploadComplete={fetchResults} />
+          {isFree ? (
+            <div className="space-y-3 text-sm text-zinc-400">
+              <p>
+                Bulk QC is a <span className="text-white font-medium">paid feature</span>.
+              </p>
+              <p>
+                Upgrade to the <span className="text-blue-400 font-medium">Pro</span> or{" "}
+                <span className="text-purple-400 font-medium">Enterprise</span> plan to enable
+                automated QC across entire projects.
+              </p>
+              <Button
+                className="mt-2"
+                onClick={() => {
+                  window.location.href = "/dashboard/settings";
+                }}
+              >
+                View Plans
+              </Button>
+            </div>
+          ) : proLimitReached ? (
+            <div className="space-y-3 text-sm text-zinc-400">
+              <p>
+                You have reached your{" "}
+                <span className="text-blue-400 font-medium">Pro</span> bulk QC limit of{" "}
+                <span className="text-white font-semibold">{PRO_BULK_QC_LIMIT}</span> jobs.
+              </p>
+              <p>
+                Upgrade to <span className="text-purple-400 font-medium">Enterprise</span> for
+                unlimited bulk QC.
+              </p>
+              <Button
+                className="mt-2"
+                variant="outline"
+                onClick={() => {
+                  window.location.href = "/dashboard/settings";
+                }}
+              >
+                Manage Subscription
+              </Button>
+            </div>
+          ) : (
+            <BulkQCUpload onUploadComplete={fetchResults} />
+          )}
         </CardContent>
       </Card>
 

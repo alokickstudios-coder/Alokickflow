@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Plus, Calendar, FolderOpen } from "lucide-react";
+import { Plus, Calendar, FolderOpen, PlayCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -33,11 +33,11 @@ interface Project {
   id: string;
   code: string;
   name: string;
-  status?: "active" | "archived";
+  status?: "active" | "completed" | "archived";
   created_at: string;
 }
 
-function StatusBadge({ status }: { status: "active" | "archived" }) {
+function StatusBadge({ status }: { status: "active" | "completed" | "archived" }) {
   return (
     <span
       className={cn(
@@ -88,6 +88,7 @@ export default function ProjectsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [formData, setFormData] = useState({ name: "", code: "" });
   const [submitting, setSubmitting] = useState(false);
+  const [subscriptionTier, setSubscriptionTier] = useState<"free" | "pro" | "enterprise" | null>(null);
   const { toast } = useToast();
 
   const fetchProjects = async () => {
@@ -105,7 +106,7 @@ export default function ProjectsPage() {
 
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .select("organization_id")
+        .select("organization_id, role")
         .eq("id", user.id)
         .single();
 
@@ -126,6 +127,17 @@ export default function ProjectsPage() {
 
       if (error) throw error;
       setProjects(data || []);
+
+      // Fetch subscription tier for gating QC features
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("subscription_tier")
+        .eq("id", profile.organization_id)
+        .single();
+
+      if (org?.subscription_tier) {
+        setSubscriptionTier(org.subscription_tier as "free" | "pro" | "enterprise");
+      }
     } catch (error: any) {
       console.error("Error fetching projects:", error);
       toast({
@@ -199,6 +211,41 @@ export default function ProjectsPage() {
       month: "short",
       day: "numeric",
     });
+  };
+
+  const handleBeginQC = (project: Project) => {
+    if (!subscriptionTier) {
+      toast({
+        title: "Please wait",
+        description: "Loading subscription details...",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (project.status !== "completed") {
+      toast({
+        title: "Project not ready for QC",
+        description: "Mark the project as completed before starting Bulk QC.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (subscriptionTier === "free") {
+      toast({
+        title: "Bulk QC is a paid feature",
+        description: "Upgrade to Pro or Enterprise to enable Bulk QC.",
+        variant: "destructive",
+      });
+      window.location.href = "/dashboard/settings";
+      return;
+    }
+
+    // For Pro and Enterprise, navigate to Bulk QC with project context
+    window.location.href = `/dashboard/qc/bulk?projectId=${project.id}&code=${encodeURIComponent(
+      project.code
+    )}`;
   };
 
   return (
@@ -323,6 +370,7 @@ export default function ProjectsPage() {
                       <TableHead className="text-zinc-400">Name</TableHead>
                       <TableHead className="text-zinc-400">Status</TableHead>
                       <TableHead className="text-zinc-400">Created Date</TableHead>
+                      <TableHead className="text-zinc-400 text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -348,6 +396,17 @@ export default function ProjectsPage() {
                             <Calendar className="h-4 w-4" />
                             {formatDate(project.created_at)}
                           </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="border-purple-500/40 text-purple-300 hover:bg-purple-500/10"
+                            onClick={() => handleBeginQC(project)}
+                          >
+                            <PlayCircle className="h-4 w-4 mr-1.5" />
+                            Begin QC
+                          </Button>
                         </TableCell>
                       </motion.tr>
                     ))}

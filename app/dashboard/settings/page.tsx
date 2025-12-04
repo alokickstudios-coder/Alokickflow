@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Save, Building2, User, Bell, Shield, CreditCard, HardDrive } from "lucide-react";
+import { Save, Building2, User, Bell, Shield, CreditCard, HardDrive, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,11 @@ export default function SettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [googleSaving, setGoogleSaving] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState("");
+  const [googleClientSecret, setGoogleClientSecret] = useState("");
+  const [googleClientIdMasked, setGoogleClientIdMasked] = useState<string | null>(null);
+  const [hasGoogleSecret, setHasGoogleSecret] = useState(false);
   const { toast } = useToast();
 
   const [orgName, setOrgName] = useState("");
@@ -37,6 +42,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     fetchData();
+    fetchGoogleSettings();
   }, []);
 
   const fetchData = async () => {
@@ -72,6 +78,66 @@ export default function SettingsPage() {
       console.error("Error fetching settings:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchGoogleSettings = async () => {
+    try {
+      const res = await fetch("/api/settings/google");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.googleClientIdMasked) {
+        setGoogleClientIdMasked(data.googleClientIdMasked);
+        setHasGoogleSecret(data.hasClientSecret);
+      }
+    } catch (error) {
+      console.error("Error fetching Google settings:", error);
+    }
+  };
+
+  const handleSaveGoogle = async () => {
+    if (!googleClientId || !googleClientSecret) {
+      toast({
+        title: "Missing fields",
+        description: "Please enter both Client ID and Client Secret.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setGoogleSaving(true);
+    try {
+      const res = await fetch("/api/settings/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientId: googleClientId,
+          clientSecret: googleClientSecret,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to save Google OAuth settings");
+      }
+
+      setGoogleClientIdMasked(data.googleClientIdMasked);
+      setHasGoogleSecret(true);
+      setGoogleClientSecret("");
+
+      toast({
+        title: "Google OAuth Updated",
+        description: "Google OAuth credentials saved for all users.",
+        variant: "success",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setGoogleSaving(false);
     }
   };
 
@@ -236,7 +302,73 @@ export default function SettingsPage() {
           </Card>
 
           {/* Google Drive Integration */}
-          <DriveConnect />
+          <div className="space-y-4">
+            <DriveConnect />
+
+            {/* Google OAuth Credentials (Admin only) */}
+            {organization && profile && (
+              <Card className="glass border-zinc-800/50">
+                <CardHeader>
+                  <div className="flex items-center gap-3 mb-2">
+                    <KeyRound className="h-5 w-5 text-zinc-400" />
+                    <CardTitle className="text-white">
+                      Google OAuth (App-wide)
+                    </CardTitle>
+                  </div>
+                  <CardDescription>
+                    Configure the Google OAuth Client ID and Secret used for Drive integration.
+                    These settings apply to all users in this deployment.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="google-client-id">Client ID</Label>
+                    <Input
+                      id="google-client-id"
+                      placeholder={
+                        googleClientIdMasked
+                          ? `Current: ${googleClientIdMasked}`
+                          : "1677...apps.googleusercontent.com"
+                      }
+                      value={googleClientId}
+                      onChange={(e) => setGoogleClientId(e.target.value)}
+                    />
+                    {googleClientIdMasked && (
+                      <p className="text-xs text-zinc-500">
+                        Stored Client ID: <span className="font-mono">{googleClientIdMasked}</span>
+                      </p>
+                    )}
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="google-client-secret">Client Secret</Label>
+                    <Input
+                      id="google-client-secret"
+                      type="password"
+                      placeholder={hasGoogleSecret ? "************ (already set)" : "GOCSPX-..."}
+                      value={googleClientSecret}
+                      onChange={(e) => setGoogleClientSecret(e.target.value)}
+                    />
+                    <p className="text-xs text-zinc-500">
+                      Only admins can update these values. Secrets are stored securely in the database,
+                      not exposed to other users.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-zinc-500">
+                      Redirect URI (configure in Google Cloud Console):{" "}
+                      <span className="font-mono">
+                        {`${window.location.origin}/api/google/callback`}
+                      </span>
+                    </p>
+                    <Button onClick={handleSaveGoogle} disabled={googleSaving}>
+                      <Save className="h-4 w-4 mr-2" />
+                      {googleSaving ? "Saving..." : "Save OAuth Keys"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
 
           {/* Notifications Settings */}
           <Card className="glass border-zinc-800/50">
