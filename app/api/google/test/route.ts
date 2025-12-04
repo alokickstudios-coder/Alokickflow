@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { listFiles, createFolder, uploadFile } from "@/lib/google-drive/client";
 
+// Debug endpoint that inspects Google Drive connectivity using cookies.
+// Mark as dynamic so Next.js doesn't try to prerender it at build time.
+export const dynamic = "force-dynamic";
+
 export async function GET(request: NextRequest) {
   const results: Record<string, any> = {
     timestamp: new Date().toISOString(),

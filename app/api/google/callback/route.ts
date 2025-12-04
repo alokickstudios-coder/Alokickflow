@@ -3,6 +3,9 @@ import { cookies } from "next/headers";
 import { createClient as createAdminClient } from "@supabase/supabase-js";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 
+// Uses cookies and external network calls and must run dynamically.
+export const dynamic = "force-dynamic";
+
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 const REDIRECT_URI = `${APP_URL}/api/google/callback`;
 

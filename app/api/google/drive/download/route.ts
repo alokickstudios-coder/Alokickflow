@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { extractDriveId } from "@/lib/google-drive";
 
+// This route streams file content from Google Drive and reads auth cookies.
+// It must always run dynamically on the server.
+export const dynamic = "force-dynamic";
+
 export async function GET(request: NextRequest) {
   try {
     const cookieStore = await cookies();

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { extractDriveId } from "@/lib/google-drive";
 
+// This route needs access to cookies and external APIs, so force it to be dynamic.
+export const dynamic = "force-dynamic";
+
 export async function GET(request: NextRequest) {
   try {
     const cookieStore = await cookies();
