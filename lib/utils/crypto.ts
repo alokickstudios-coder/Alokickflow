@@ -45,3 +45,4 @@ export async function decrypt(encryptedText: string): Promise<string> {
     throw new Error("Decryption failed");
   }
 }
+
