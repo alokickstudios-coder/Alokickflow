@@ -146,18 +146,62 @@ export async function GET(request: NextRequest) {
     // Also store in database if available
     const supabase = getAdminClient();
     if (supabase) {
-      // Get the authenticated user from cookies/session if possible
-      // For now, store globally (in production, associate with user)
       try {
-        await supabase.from("google_tokens").upsert({
-          id: "default",
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token || null,
-          expires_at: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
-          created_at: new Date().toISOString(),
-        });
+        // Get the authenticated user from session
+        const serverClient = await createServerClient();
+        const { data: { user } } = await serverClient.auth.getUser();
+
+        const { encrypt } = await import("@/lib/utils/crypto");
+
+        const encryptedAccessToken = await encrypt(tokens.access_token);
+        const encryptedRefreshToken = tokens.refresh_token
+          ? await encrypt(tokens.refresh_token)
+          : null;
+        
+        if (user) {
+          // Store with user_id
+          const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString();
+          
+          // Try upsert with user_id first
+          const { error: userError } = await supabase
+            .from("google_tokens")
+            .upsert({
+              user_id: user.id,
+              access_token: encryptedAccessToken,
+              refresh_token: encryptedRefreshToken,
+              expires_at: expiresAt,
+              created_at: new Date().toISOString(),
+            }, {
+              onConflict: "user_id"
+            });
+          
+          if (userError) {
+            console.warn("Could not store token with user_id, trying with id:", userError);
+            // Fallback: store with id="default" if user_id column doesn't exist
+            await supabase.from("google_tokens").upsert({
+              id: "default",
+              access_token: encryptedAccessToken,
+              refresh_token: encryptedRefreshToken,
+              expires_at: expiresAt,
+              created_at: new Date().toISOString(),
+            });
+          } else {
+            console.log(`[GoogleCallback] Stored tokens for user ${user.id}`);
+          }
+        } else {
+          // No user session, store as default
+          console.log("[GoogleCallback] No user session, storing as default");
+          const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString();
+          await supabase.from("google_tokens").upsert({
+            id: "default",
+            access_token: encryptedAccessToken,
+            refresh_token: encryptedRefreshToken,
+            expires_at: expiresAt,
+            created_at: new Date().toISOString(),
+          });
+        }
       } catch (dbError) {
-        console.log("Could not store tokens in database (table may not exist):", dbError);
+        console.error("Could not store tokens in database:", dbError);
       }
     }
 

@@ -9,9 +9,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DriveConnect } from "@/components/drive/drive-connect";
+import { SubscriptionCard } from "@/components/billing/subscription-card";
 import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { PLANS, PlanSlug } from "@/config/subscriptionConfig";
 
 interface Organization {
   id: string;
@@ -23,6 +27,130 @@ interface Profile {
   id: string;
   full_name: string | null;
   avatar_url: string | null;
+}
+
+function SubscriptionManagementSection() {
+  const [subscription, setSubscription] = useState<any>(null);
+  const [usage, setUsage] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
+  const [planSlug, setPlanSlug] = useState<PlanSlug>("free");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetchSubscriptionData();
+  }, []);
+
+  const fetchSubscriptionData = async () => {
+    try {
+      setLoading(true);
+      const [subRes, usageRes] = await Promise.all([
+        fetch("/api/billing/subscription"),
+        fetch("/api/billing/usage"),
+      ]);
+
+      if (subRes.ok) {
+        const subData = await subRes.json();
+        setSubscription(subData);
+        const currentPlan = subData?.subscription?.plan?.slug || "free";
+        setPlanSlug(currentPlan as PlanSlug);
+      }
+
+      if (usageRes.ok) {
+        const usageData = await usageRes.json();
+        setUsage(usageData);
+      }
+    } catch (error) {
+      console.error("Error fetching subscription data:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load subscription data",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+
+  if (!subscription) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-zinc-400">
+          You are currently on the Free plan. Upgrade to unlock more features.
+        </p>
+        <Button asChild>
+          <Link href="/dashboard/pricing">View Plans</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-sm text-zinc-400">Plan</p>
+          <Select value={planSlug} onValueChange={(v) => setPlanSlug(v as PlanSlug)}>
+            <SelectTrigger className="w-48">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="free">Free</SelectItem>
+              <SelectItem value="mid">Mid</SelectItem>
+              <SelectItem value="enterprise">Enterprise</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          disabled={saving || planSlug === subscription.subscription.plan.slug}
+          onClick={async () => {
+            setSaving(true);
+            try {
+              const res = await fetch("/api/billing/plan", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ planSlug, billingCycle: "monthly" }),
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Failed to update plan");
+              toast({
+                title: "Plan Updated",
+                description: `Successfully switched to ${data.subscription.plan.name} plan`,
+                variant: "success",
+              });
+              fetchSubscriptionData();
+            } catch (err: any) {
+              toast({
+                title: "Error",
+                description: err.message,
+                variant: "destructive",
+              });
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          {saving ? "Saving..." : planSlug === subscription.subscription.plan.slug ? "Current Plan" : "Apply Plan"}
+        </Button>
+      </div>
+
+      <SubscriptionCard
+        plan={subscription.subscription}
+        limits={subscription.limits}
+        usage={usage?.usage ? { ...usage.usage, ...usage.limits } : undefined}
+        enabledAddons={subscription.enabledAddons || []}
+      />
+    </div>
+  );
 }
 
 export default function SettingsPage() {
@@ -253,15 +381,17 @@ export default function SettingsPage() {
                     <span
                       className={cn(
                         "inline-flex items-center rounded-full border px-3 py-1 text-sm font-medium",
-                        organization.subscription_tier === "enterprise"
+                        (organization.subscription_tier as string) === "enterprise"
                           ? "border-purple-500/20 bg-purple-500/10 text-purple-400"
-                          : organization.subscription_tier === "pro"
+                          : (organization.subscription_tier as string) === "mid"
                           ? "border-blue-500/20 bg-blue-500/10 text-blue-400"
                           : "border-zinc-500/20 bg-zinc-500/10 text-zinc-400"
                       )}
                     >
-                      {organization.subscription_tier.charAt(0).toUpperCase() +
-                        organization.subscription_tier.slice(1)}
+                      {(organization.subscription_tier as string) === "mid"
+                        ? "Mid"
+                        : (organization.subscription_tier as string).charAt(0).toUpperCase() +
+                          (organization.subscription_tier as string).slice(1)}
                     </span>
                   </div>
                 </div>
@@ -411,54 +541,14 @@ export default function SettingsPage() {
             <CardHeader>
               <div className="flex items-center gap-3 mb-2">
                 <CreditCard className="h-5 w-5 text-zinc-400" />
-                <CardTitle className="text-white">Billing</CardTitle>
+                <CardTitle className="text-white">Billing & Subscription</CardTitle>
               </div>
               <CardDescription>
-                Manage your subscription and payment methods
+                Manage your subscription, usage, and add-ons
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {organization?.subscription_tier !== "free" ? (
-                 <div className="flex flex-col gap-4">
-                    <div className="p-4 rounded-lg bg-zinc-900/50 border border-zinc-800">
-                        <div className="flex items-center justify-between mb-2">
-                            <span className="text-zinc-400">Current Plan</span>
-                            <span className="font-medium text-white capitalize">{organization?.subscription_tier}</span>
-                        </div>
-                        <p className="text-xs text-zinc-500">
-                            Managed via Stripe
-                        </p>
-                    </div>
-                    <Button 
-                        variant="outline" 
-                        onClick={async () => {
-                            try {
-                                const res = await fetch("/api/stripe/customer-portal", { method: "POST" });
-                                if (!res.ok) throw new Error("Failed to load portal");
-                                const { url } = await res.json();
-                                window.location.href = url;
-                            } catch (error) {
-                                toast({
-                                    title: "Error",
-                                    description: "Could not access billing portal",
-                                    variant: "destructive"
-                                });
-                            }
-                        }}
-                    >
-                        Manage Subscription
-                    </Button>
-                 </div>
-              ) : (
-                  <div className="space-y-4">
-                    <p className="text-sm text-zinc-400">
-                        You are currently on the Free plan. Upgrade to unlock more features.
-                    </p>
-                    <Button asChild>
-                        <a href="/dashboard/pricing">View Plans</a>
-                    </Button>
-                  </div>
-              )}
+              <SubscriptionManagementSection />
             </CardContent>
           </Card>
         </div>

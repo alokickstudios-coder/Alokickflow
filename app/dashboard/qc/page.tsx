@@ -1,11 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { motion } from "framer-motion";
-import { CheckCircle2, XCircle, AlertTriangle, FileVideo, FileAudio, Download } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -14,122 +10,45 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Download, ExternalLink, RefreshCw, FileSpreadsheet, ChevronDown, ChevronUp } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
-interface QCError {
-  type: string;
-  message: string;
-  timestamp: number;
-  severity: "error" | "warning";
-}
-
-interface QCReport {
-  status: "passed" | "failed";
-  format?: {
-    container: string;
-    videoCodec?: string;
-    audioCodec?: string;
-    resolution?: string;
-    frameRate?: number;
-  };
-  duration?: {
-    expected: number;
-    actual: number;
-    difference: number;
-  };
-  loudness?: {
-    value: number;
-    target: number;
-    status: "passed" | "failed";
-  };
-  errors: QCError[];
-  warnings: QCError[];
-  analyzedAt: string;
-}
-
-interface Delivery {
+interface QCJob {
   id: string;
-  file_name: string;
-  original_file_name: string;
-  status: "uploading" | "processing" | "qc_passed" | "qc_failed" | "rejected";
-  qc_report: QCReport | null;
-  qc_errors: QCError[];
+  file_name: string | null;
+  status: string;
+  error_message: string | null;
+  result_json: any;
   created_at: string;
+  updated_at: string;
   project?: {
+    id: string;
     code: string;
     name: string;
   };
-  vendor?: {
-    full_name: string | null;
-  };
 }
 
-function StatusIcon({ status }: { status: "passed" | "failed" | "pending" }) {
-  if (status === "passed") {
-    return <CheckCircle2 className="h-5 w-5 text-green-400" />;
-  }
-  if (status === "failed") {
-    return <XCircle className="h-5 w-5 text-red-400" />;
-  }
-  return <AlertTriangle className="h-5 w-5 text-yellow-400" />;
-}
-
-function QCStatusBadge({ status }: { status: Delivery["status"] }) {
-  const variants = {
-    qc_passed: {
-      label: "Passed",
-      className: "border-green-500/20 bg-green-500/10 text-green-400",
-    },
-    qc_failed: {
-      label: "Failed",
-      className: "border-red-500/20 bg-red-500/10 text-red-400",
-    },
-    processing: {
-      label: "Processing",
-      className: "border-yellow-500/20 bg-yellow-500/10 text-yellow-400",
-    },
-    uploading: {
-      label: "Uploading",
-      className: "border-blue-500/20 bg-blue-500/10 text-blue-400",
-    },
-    rejected: {
-      label: "Rejected",
-      className: "border-red-500/20 bg-red-500/10 text-red-400",
-    },
-  };
-
-  const { label, className } = variants[status];
-
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium",
-        className
-      )}
-    >
-      {label}
-    </span>
-  );
-}
-
-function formatDuration(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-}
-
-function formatTimestamp(seconds: number): string {
-  return formatDuration(seconds);
-}
+type SortField = "file_name" | "status" | "created_at" | "score";
+type SortDirection = "asc" | "desc";
 
 export default function QCResultsPage() {
-  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [jobs, setJobs] = useState<QCJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
+  const [selectedJob, setSelectedJob] = useState<QCJob | null>(null);
+  const [sortField, setSortField] = useState<SortField>("created_at");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
-  const fetchQCDeliveries = async () => {
+  const fetchQCJobs = async () => {
     try {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
@@ -143,207 +62,378 @@ export default function QCResultsPage() {
 
       if (!profile?.organization_id) return;
 
-      // Fetch deliveries that have been processed (not just uploading)
-      const { data: deliveriesData, error: deliveriesError } = await supabase
-        .from("deliveries")
-        .select("*")
-        .eq("organization_id", profile.organization_id)
-        .in("status", ["qc_passed", "qc_failed", "processing"])
+      // Fetch QC jobs that are completed
+      const { data: jobsData, error: jobsError } = await supabase
+        .from("qc_jobs")
+        .select(`
+          *,
+          project:projects(id, code, name)
+        `)
+        .eq("organisation_id", profile.organization_id)
+        .in("status", ["completed", "failed"])
         .order("created_at", { ascending: false })
-        .limit(100);
+        .limit(500);
 
-      if (deliveriesError) throw deliveriesError;
+      if (jobsError) throw jobsError;
 
-      // Fetch projects and vendors
-      const projectIds = [...new Set(deliveriesData?.map((d) => d.project_id) || [])];
-      const vendorIds = [...new Set(deliveriesData?.map((d) => d.vendor_id) || [])];
-
-      const { data: projects } = await supabase
-        .from("projects")
-        .select("id, code, name")
-        .in("id", projectIds);
-
-      const { data: vendors } = await supabase
-        .from("profiles")
-        .select("id, full_name")
-        .in("id", vendorIds);
-
-      const enrichedDeliveries = (deliveriesData || []).map((delivery) => ({
-        ...delivery,
-        project: projects?.find((p) => p.id === delivery.project_id),
-        vendor: vendors?.find((v) => v.id === delivery.vendor_id),
-      }));
-
-      setDeliveries(enrichedDeliveries);
-    } catch (error) {
-      console.error("Error fetching QC results:", error);
+      setJobs((jobsData || []) as QCJob[]);
+    } catch (error: any) {
+      console.error("Error fetching QC jobs:", error);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchQCDeliveries();
+    fetchQCJobs();
+    // Auto-refresh every 10 seconds
+    const interval = setInterval(fetchQCJobs, 10000);
+    return () => clearInterval(interval);
   }, []);
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+  };
+
+  const getStatusBadge = (status: string, result: any) => {
+    if (status === "completed") {
+      const qcStatus = result?.status;
+      if (qcStatus === "passed") {
+        return <Badge className="bg-green-500/20 text-green-400 border-green-500/50">Passed</Badge>;
+      } else if (qcStatus === "failed") {
+        return <Badge className="bg-red-500/20 text-red-400 border-red-500/50">Failed</Badge>;
+      } else {
+        return <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/50">Needs Review</Badge>;
+      }
+    } else if (status === "failed") {
+      return <Badge className="bg-red-500/20 text-red-400 border-red-500/50">Error</Badge>;
+    } else {
+      return <Badge className="bg-zinc-500/20 text-zinc-400 border-zinc-500/50">{status}</Badge>;
+    }
+  };
+
+  const getQCValue = (job: QCJob, field: string): string | number => {
+    const result = job.result_json || {};
+    
+    switch (field) {
+      case "audioMissing":
+        return result.basicQC?.audioMissing?.detected ? "Yes" : "No";
+      case "loudness":
+        const lufs = result.basicQC?.loudness?.lufs;
+        return lufs !== undefined ? `${lufs.toFixed(1)} LUFS` : "N/A";
+      case "lipSync":
+        if (result.lipSync?.skipped) return "Skipped";
+        const score = result.lipSync?.syncScore;
+        return score !== undefined ? `${(score * 100).toFixed(0)}%` : "N/A";
+      case "subtitleTiming":
+        return result.basicQC?.subtitleTiming?.status === "failed" ? "Failed" : "OK";
+      case "bgm":
+        return result.bgm?.bgmDetected ? "Detected" : "Missing";
+      case "glitches":
+        return result.videoGlitch?.glitchCount || 0;
+      case "visualQuality":
+        return result.basicQC?.visualQuality?.status === "failed" ? "Failed" : "OK";
+      case "score":
+        return result.score || 0;
+      default:
+        return "N/A";
+    }
+  };
+
+  const filteredAndSorted = jobs
+    .filter((job) => {
+      if (filterStatus !== "all") {
+        const result = job.result_json || {};
+        if (filterStatus === "passed" && result.status !== "passed") return false;
+        if (filterStatus === "failed" && result.status !== "failed" && job.status !== "failed") return false;
+        if (filterStatus === "needs_review" && result.status !== "needs_review") return false;
+      }
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        return (
+          job.file_name?.toLowerCase().includes(query) ||
+          job.project?.name?.toLowerCase().includes(query) ||
+          job.project?.code?.toLowerCase().includes(query)
+        );
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      let aVal: any;
+      let bVal: any;
+
+      if (sortField === "score") {
+        aVal = a.result_json?.score || 0;
+        bVal = b.result_json?.score || 0;
+      } else if (sortField === "file_name") {
+        aVal = a.file_name || "";
+        bVal = b.file_name || "";
+      } else if (sortField === "status") {
+        aVal = a.status;
+        bVal = b.status;
+      } else {
+        aVal = new Date(a.created_at).getTime();
+        bVal = new Date(b.created_at).getTime();
+      }
+
+      if (sortDirection === "asc") {
+        return aVal > bVal ? 1 : -1;
+      } else {
+        return aVal < bVal ? 1 : -1;
+      }
     });
+
+  const handleExportToSheets = async () => {
+    if (!currentProjectId && filteredAndSorted.length > 0) {
+      const projectIds = [...new Set(filteredAndSorted.map((j) => j.project?.id).filter(Boolean))];
+      if (projectIds.length === 0) {
+        alert("No project found. Please ensure QC results are linked to a project.");
+        return;
+      }
+      if (projectIds.length > 1) {
+        alert("Multiple projects found. Please filter to a single project first.");
+        return;
+      }
+      setCurrentProjectId(projectIds[0] as string);
+    }
+
+    const projectId = currentProjectId || filteredAndSorted[0]?.project?.id;
+    if (!projectId) {
+      alert("No project found for export.");
+      return;
+    }
+
+    setExporting(true);
+    try {
+      const response = await fetch("/api/qc/export-to-sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to export to Google Sheets");
+      }
+
+      if (data.sheetUrl) {
+        window.open(data.sheetUrl, "_blank");
+      }
+      
+      const message = data.isNewSheet 
+        ? `Created new QC sheet and exported ${data.rowCount} result(s)!`
+        : `Updated QC sheet with ${data.rowCount} result(s)!`;
+      
+      alert(message);
+    } catch (error: any) {
+      alert(`Export failed: ${error.message}`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-6 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-semibold text-white mb-2">QC Results</h1>
-          <p className="text-zinc-400">
-            Review quality control reports and analysis results
-          </p>
+          <h1 className="text-3xl font-bold text-white">QC Results</h1>
+          <p className="text-zinc-400 mt-1">View and manage quality control results</p>
         </div>
-        <Button asChild>
-          <a href="/dashboard/qc/bulk">Bulk QC Analysis</a>
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={handleExportToSheets}
+            disabled={exporting || filteredAndSorted.length === 0}
+            className="bg-purple-600 hover:bg-purple-700"
+          >
+            <FileSpreadsheet className="h-4 w-4 mr-2" />
+            {exporting ? "Exporting..." : "Export to Sheets"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={fetchQCJobs}
+            disabled={loading}
+            className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+          >
+            <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
-      {/* QC Results Table */}
-      <Card className="glass border-zinc-800/50">
-        <CardHeader className="pb-2.5 px-6 pt-6">
-          <CardTitle className="text-white text-lg">Quality Control Reports</CardTitle>
-        </CardHeader>
+      {/* Filters */}
+      <Card className="border-zinc-800 bg-zinc-900/50">
+        <CardContent className="p-4">
+          <div className="flex items-center gap-4">
+            <Input
+              placeholder="Search files or projects..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="max-w-sm border-zinc-700 bg-zinc-800 text-white"
+            />
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger className="w-[180px] border-zinc-700 bg-zinc-800 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="passed">Passed</SelectItem>
+                <SelectItem value="failed">Failed</SelectItem>
+                <SelectItem value="needs_review">Needs Review</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Results Table */}
+      <Card className="border-zinc-800 bg-zinc-900/50">
         <CardContent className="p-0">
           {loading ? (
             <div className="p-6 space-y-3">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-10 flex-1" />
-                </div>
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-12 w-full bg-zinc-800" />
               ))}
             </div>
-          ) : deliveries.length === 0 ? (
-            <div className="text-center py-12 px-6">
-              <p className="text-zinc-400">No QC results available yet</p>
+          ) : filteredAndSorted.length === 0 ? (
+            <div className="p-12 text-center">
+              <p className="text-zinc-400">No QC results found</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow className="border-zinc-800/50 hover:bg-zinc-900/30">
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[250px]">
-                      File Name
+                  <TableRow className="border-zinc-800 hover:bg-zinc-800/50">
+                    <TableHead className="text-zinc-300">
+                      <button
+                        onClick={() => handleSort("file_name")}
+                        className="flex items-center gap-1 hover:text-white"
+                      >
+                        File Name
+                        {sortField === "file_name" && (
+                          sortDirection === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                        )}
+                      </button>
                     </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[100px]">
-                      Project
+                    <TableHead className="text-zinc-300">Project</TableHead>
+                    <TableHead className="text-zinc-300">
+                      <button
+                        onClick={() => handleSort("status")}
+                        className="flex items-center gap-1 hover:text-white"
+                      >
+                        Status
+                        {sortField === "status" && (
+                          sortDirection === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                        )}
+                      </button>
                     </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
-                      Status
+                    <TableHead className="text-zinc-300">Audio Missing</TableHead>
+                    <TableHead className="text-zinc-300">Loudness</TableHead>
+                    <TableHead className="text-zinc-300">Lip-Sync</TableHead>
+                    <TableHead className="text-zinc-300">Subtitle Timing</TableHead>
+                    <TableHead className="text-zinc-300">BGM</TableHead>
+                    <TableHead className="text-zinc-300">Glitches</TableHead>
+                    <TableHead className="text-zinc-300">Visual Quality</TableHead>
+                    <TableHead className="text-zinc-300">
+                      <button
+                        onClick={() => handleSort("score")}
+                        className="flex items-center gap-1 hover:text-white"
+                      >
+                        Score
+                        {sortField === "score" && (
+                          sortDirection === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                        )}
+                      </button>
                     </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[200px]">
-                      QC Summary
+                    <TableHead className="text-zinc-300">
+                      <button
+                        onClick={() => handleSort("created_at")}
+                        className="flex items-center gap-1 hover:text-white"
+                      >
+                        Created At
+                        {sortField === "created_at" && (
+                          sortDirection === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                        )}
+                      </button>
                     </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[120px]">
-                      Date
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[100px] text-right">
-                      Actions
-                    </TableHead>
+                    <TableHead className="text-zinc-300">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {deliveries.map((delivery, index) => {
-                    const report = delivery.qc_report;
-                    const hasErrors = report?.errors && report.errors.length > 0;
-                    const hasWarnings = report?.warnings && report.warnings.length > 0;
+                  {filteredAndSorted.map((job) => {
+                    const result = job.result_json || {};
+                    const isExpanded = selectedJob?.id === job.id;
 
                     return (
-                      <motion.tr
-                        key={delivery.id}
-                        initial={{ opacity: 0, y: 5 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.15, delay: index * 0.02 }}
-                        className="border-zinc-800/50 hover:bg-zinc-900/30 transition-colors cursor-pointer"
-                        onClick={() => setSelectedDelivery(delivery)}
-                      >
-                        <TableCell className="py-2">
-                          <div className="flex items-center gap-2.5">
-                            {delivery.file_name.match(/\.(mov|mp4|avi|mkv|mxf)$/i) ? (
-                              <FileVideo className="h-4 w-4 text-zinc-400" />
-                            ) : (
-                              <FileAudio className="h-4 w-4 text-zinc-400" />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-white truncate">
-                                {delivery.original_file_name || delivery.file_name}
-                              </p>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="py-2">
-                          <span className="text-sm font-mono font-semibold text-zinc-300">
-                            {delivery.project?.code || "—"}
-                          </span>
-                        </TableCell>
-                        <TableCell className="py-2">
-                          <QCStatusBadge status={delivery.status} />
-                        </TableCell>
-                        <TableCell className="py-2">
-                          {report ? (
+                      <>
+                        <TableRow
+                          key={job.id}
+                          className="border-zinc-800 hover:bg-zinc-800/50 cursor-pointer"
+                          onClick={() => setSelectedJob(isExpanded ? null : job)}
+                        >
+                          <TableCell className="text-white font-medium">
+                            {job.file_name || "Unknown"}
+                          </TableCell>
+                          <TableCell className="text-zinc-400">
+                            {job.project ? `${job.project.code} - ${job.project.name}` : "N/A"}
+                          </TableCell>
+                          <TableCell>{getStatusBadge(job.status, result)}</TableCell>
+                          <TableCell className="text-zinc-400">{getQCValue(job, "audioMissing")}</TableCell>
+                          <TableCell className="text-zinc-400">{getQCValue(job, "loudness")}</TableCell>
+                          <TableCell className="text-zinc-400">{getQCValue(job, "lipSync")}</TableCell>
+                          <TableCell className="text-zinc-400">{getQCValue(job, "subtitleTiming")}</TableCell>
+                          <TableCell className="text-zinc-400">{getQCValue(job, "bgm")}</TableCell>
+                          <TableCell className="text-zinc-400">{getQCValue(job, "glitches")}</TableCell>
+                          <TableCell className="text-zinc-400">{getQCValue(job, "visualQuality")}</TableCell>
+                          <TableCell className="text-zinc-400">
+                            <Badge variant="outline" className="border-zinc-600">
+                              {getQCValue(job, "score")}/100
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-zinc-400">
+                            {new Date(job.created_at).toLocaleDateString()}
+                          </TableCell>
+                          <TableCell>
                             <div className="flex items-center gap-2">
-                              <StatusIcon
-                                status={
-                                  report.status === "passed"
-                                    ? "passed"
-                                    : report.status === "failed"
-                                    ? "failed"
-                                    : "pending"
-                                }
-                              />
-                              <div className="text-xs text-zinc-400">
-                                {hasErrors && (
-                                  <span className="text-red-400">
-                                    {report.errors.length} error{report.errors.length > 1 ? "s" : ""}
-                                  </span>
-                                )}
-                                {hasErrors && hasWarnings && " • "}
-                                {hasWarnings && (
-                                  <span className="text-yellow-400">
-                                    {report.warnings.length} warning
-                                    {report.warnings.length > 1 ? "s" : ""}
-                                  </span>
-                                )}
-                                {!hasErrors && !hasWarnings && report.status === "passed" && (
-                                  <span className="text-green-400">All checks passed</span>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  // Download or view details
+                                }}
+                                className="h-8 w-8 p-0 text-zinc-400 hover:text-white"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                        {isExpanded && (
+                          <TableRow className="border-zinc-800 bg-zinc-900/30">
+                            <TableCell colSpan={13} className="p-6">
+                              <div className="space-y-4">
+                                <h4 className="font-semibold text-white">QC Report Details</h4>
+                                <pre className="text-xs text-zinc-400 bg-zinc-950 p-4 rounded overflow-auto max-h-96">
+                                  {JSON.stringify(result, null, 2)}
+                                </pre>
+                                {job.error_message && (
+                                  <div className="text-red-400 text-sm">
+                                    <strong>Error:</strong> {job.error_message}
+                                  </div>
                                 )}
                               </div>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-zinc-500">No report available</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="py-2">
-                          <span className="text-xs text-zinc-400">
-                            {formatDate(delivery.created_at)}
-                          </span>
-                        </TableCell>
-                        <TableCell className="py-2 text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedDelivery(delivery);
-                            }}
-                            className="h-7 px-2 text-zinc-400 hover:text-white"
-                          >
-                            View
-                          </Button>
-                        </TableCell>
-                      </motion.tr>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </>
                     );
                   })}
                 </TableBody>
@@ -352,298 +442,6 @@ export default function QCResultsPage() {
           )}
         </CardContent>
       </Card>
-
-      {/* QC Detail Modal */}
-      {selectedDelivery && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
-          onClick={() => setSelectedDelivery(null)}
-        >
-          <motion.div
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            onClick={(e) => e.stopPropagation()}
-            className="glass border-zinc-800/50 rounded-lg w-full max-w-4xl max-h-[90vh] overflow-y-auto"
-          >
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-2xl font-semibold text-white mb-2">
-                    QC Report Details
-                  </h2>
-                  <p className="text-sm text-zinc-400">
-                    {selectedDelivery.original_file_name || selectedDelivery.file_name}
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectedDelivery(null)}
-                  className="text-zinc-400 hover:text-white"
-                >
-                  ×
-                </Button>
-              </div>
-
-              {selectedDelivery.qc_report ? (
-                <div className="space-y-6">
-                  {/* Overall Status */}
-                  <Card className="glass border-zinc-800/50">
-                    <CardHeader>
-                      <div className="flex items-center gap-3">
-                        <StatusIcon
-                          status={
-                            selectedDelivery.qc_report.status === "passed"
-                              ? "passed"
-                              : "failed"
-                          }
-                        />
-                        <CardTitle className="text-white">
-                          {selectedDelivery.qc_report.status === "passed"
-                            ? "QC Passed"
-                            : "QC Failed"}
-                        </CardTitle>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <p className="text-xs text-zinc-500 mb-1">Project</p>
-                          <p className="text-sm font-medium text-white">
-                            {selectedDelivery.project?.code || "—"} - {selectedDelivery.project?.name || "—"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-zinc-500 mb-1">Vendor</p>
-                          <p className="text-sm font-medium text-white">
-                            {selectedDelivery.vendor?.full_name || "Unknown"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-zinc-500 mb-1">Analyzed At</p>
-                          <p className="text-sm font-medium text-white">
-                            {formatDate(selectedDelivery.qc_report.analyzedAt)}
-                          </p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  {/* Format Information */}
-                  {selectedDelivery.qc_report.format && (
-                    <Card className="glass border-zinc-800/50">
-                      <CardHeader>
-                        <CardTitle className="text-white text-lg">Format</CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <p className="text-xs text-zinc-500 mb-1">Container</p>
-                            <p className="text-sm font-medium text-white">
-                              {selectedDelivery.qc_report.format.container}
-                            </p>
-                          </div>
-                          {selectedDelivery.qc_report.format.videoCodec && (
-                            <div>
-                              <p className="text-xs text-zinc-500 mb-1">Video Codec</p>
-                              <p className="text-sm font-medium text-white">
-                                {selectedDelivery.qc_report.format.videoCodec}
-                              </p>
-                            </div>
-                          )}
-                          {selectedDelivery.qc_report.format.audioCodec && (
-                            <div>
-                              <p className="text-xs text-zinc-500 mb-1">Audio Codec</p>
-                              <p className="text-sm font-medium text-white">
-                                {selectedDelivery.qc_report.format.audioCodec}
-                              </p>
-                            </div>
-                          )}
-                          {selectedDelivery.qc_report.format.resolution && (
-                            <div>
-                              <p className="text-xs text-zinc-500 mb-1">Resolution</p>
-                              <p className="text-sm font-medium text-white">
-                                {selectedDelivery.qc_report.format.resolution}
-                              </p>
-                            </div>
-                          )}
-                          {selectedDelivery.qc_report.format.frameRate && (
-                            <div>
-                              <p className="text-xs text-zinc-500 mb-1">Frame Rate</p>
-                              <p className="text-sm font-medium text-white">
-                                {selectedDelivery.qc_report.format.frameRate} fps
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  {/* Duration */}
-                  {selectedDelivery.qc_report.duration && (
-                    <Card className="glass border-zinc-800/50">
-                      <CardHeader>
-                        <CardTitle className="text-white text-lg">Duration</CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="grid grid-cols-3 gap-4">
-                          <div>
-                            <p className="text-xs text-zinc-500 mb-1">Expected</p>
-                            <p className="text-sm font-medium text-white">
-                              {formatDuration(selectedDelivery.qc_report.duration.expected)}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-zinc-500 mb-1">Actual</p>
-                            <p className="text-sm font-medium text-white">
-                              {formatDuration(selectedDelivery.qc_report.duration.actual)}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-zinc-500 mb-1">Difference</p>
-                            <p
-                              className={cn(
-                                "text-sm font-medium",
-                                Math.abs(selectedDelivery.qc_report.duration.difference) < 1
-                                  ? "text-green-400"
-                                  : "text-red-400"
-                              )}
-                            >
-                              {formatDuration(Math.abs(selectedDelivery.qc_report.duration.difference))}
-                            </p>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  {/* Loudness */}
-                  {selectedDelivery.qc_report.loudness && (
-                    <Card className="glass border-zinc-800/50">
-                      <CardHeader>
-                        <CardTitle className="text-white text-lg">Loudness (EBU R128)</CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="grid grid-cols-3 gap-4">
-                          <div>
-                            <p className="text-xs text-zinc-500 mb-1">Measured</p>
-                            <p className="text-sm font-medium text-white">
-                              {selectedDelivery.qc_report.loudness.value.toFixed(1)} LUFS
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-zinc-500 mb-1">Target</p>
-                            <p className="text-sm font-medium text-white">
-                              {selectedDelivery.qc_report.loudness.target} LUFS
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-zinc-500 mb-1">Status</p>
-                            <p
-                              className={cn(
-                                "text-sm font-medium",
-                                selectedDelivery.qc_report.loudness.status === "passed"
-                                  ? "text-green-400"
-                                  : "text-red-400"
-                              )}
-                            >
-                              {selectedDelivery.qc_report.loudness.status === "passed"
-                                ? "Passed"
-                                : "Failed"}
-                            </p>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  {/* Errors */}
-                  {selectedDelivery.qc_report.errors &&
-                    selectedDelivery.qc_report.errors.length > 0 && (
-                      <Card className="glass border-red-500/20">
-                        <CardHeader>
-                          <CardTitle className="text-red-400 text-lg flex items-center gap-2">
-                            <XCircle className="h-5 w-5" />
-                            Errors ({selectedDelivery.qc_report.errors.length})
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-3">
-                            {selectedDelivery.qc_report.errors.map((error, idx) => (
-                              <div
-                                key={idx}
-                                className="p-3 rounded-lg bg-red-500/10 border border-red-500/20"
-                              >
-                                <div className="flex items-start justify-between">
-                                  <div className="flex-1">
-                                    <p className="text-sm font-medium text-red-400 mb-1">
-                                      {error.type}
-                                    </p>
-                                    <p className="text-xs text-zinc-400">{error.message}</p>
-                                  </div>
-                                  {error.timestamp > 0 && (
-                                    <span className="text-xs text-zinc-500 ml-4">
-                                      {formatTimestamp(error.timestamp)}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )}
-
-                  {/* Warnings */}
-                  {selectedDelivery.qc_report.warnings &&
-                    selectedDelivery.qc_report.warnings.length > 0 && (
-                      <Card className="glass border-yellow-500/20">
-                        <CardHeader>
-                          <CardTitle className="text-yellow-400 text-lg flex items-center gap-2">
-                            <AlertTriangle className="h-5 w-5" />
-                            Warnings ({selectedDelivery.qc_report.warnings.length})
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-3">
-                            {selectedDelivery.qc_report.warnings.map((warning, idx) => (
-                              <div
-                                key={idx}
-                                className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20"
-                              >
-                                <div className="flex items-start justify-between">
-                                  <div className="flex-1">
-                                    <p className="text-sm font-medium text-yellow-400 mb-1">
-                                      {warning.type}
-                                    </p>
-                                    <p className="text-xs text-zinc-400">{warning.message}</p>
-                                  </div>
-                                  {warning.timestamp > 0 && (
-                                    <span className="text-xs text-zinc-500 ml-4">
-                                      {formatTimestamp(warning.timestamp)}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )}
-                </div>
-              ) : (
-                <div className="text-center py-12">
-                  <p className="text-zinc-400">No QC report available for this delivery</p>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
     </div>
   );
 }
-

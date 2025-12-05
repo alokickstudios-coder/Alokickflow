@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { BulkQCUpload } from "@/components/qc/bulk-upload";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -13,9 +13,10 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, ExternalLink, CheckCircle2, XCircle } from "lucide-react";
+import { Download, ExternalLink, CheckCircle2, XCircle, RefreshCw, FileSpreadsheet } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 interface BulkQCResult {
   id: string;
@@ -36,8 +37,16 @@ export default function BulkQCPage() {
   const [results, setResults] = useState<BulkQCResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [subscriptionTier, setSubscriptionTier] = useState<"free" | "pro" | "enterprise" | null>(null);
+  const [subscriptionTier, setSubscriptionTier] = useState<"free" | "mid" | "enterprise" | null>(null);
   const [qcCount, setQcCount] = useState(0);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [seriesLimit, setSeriesLimit] = useState<number | null>(null);
+  const [seriesRemaining, setSeriesRemaining] = useState<number | null>(null);
+  const [upgradeRequired, setUpgradeRequired] = useState(false);
+  const [limitReached, setLimitReached] = useState(false);
+  const [qcLevel, setQcLevel] = useState<string>("none");
+  const [exporting, setExporting] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
   const fetchResults = async () => {
     try {
@@ -53,17 +62,6 @@ export default function BulkQCPage() {
 
       if (!profile?.organization_id) return;
 
-      // Fetch organization tier
-      const { data: org } = await supabase
-        .from("organizations")
-        .select("subscription_tier")
-        .eq("id", profile.organization_id)
-        .single();
-
-      if (org?.subscription_tier) {
-        setSubscriptionTier(org.subscription_tier as "free" | "pro" | "enterprise");
-      }
-
       const { data: deliveries, error } = await supabase
         .from("deliveries")
         .select("*")
@@ -76,7 +74,6 @@ export default function BulkQCPage() {
 
       setQcCount(deliveries?.length || 0);
 
-      // Fetch projects
       const projectIds = [...new Set(deliveries?.map((d) => d.project_id) || [])];
       const { data: projects } = await supabase
         .from("projects")
@@ -89,6 +86,17 @@ export default function BulkQCPage() {
       }));
 
       setResults(enrichedResults);
+      
+      // Set current project ID if all results belong to same project
+      if (enrichedResults.length > 0) {
+        const projectIds = [...new Set(enrichedResults.map((r) => r.project_id).filter(Boolean))];
+        if (projectIds.length === 1) {
+          setCurrentProjectId(projectIds[0]);
+        } else if (projectIds.length > 1) {
+          // Multiple projects - clear current project ID
+          setCurrentProjectId(null);
+        }
+      }
     } catch (error) {
       console.error("Error fetching QC results:", error);
     } finally {
@@ -99,9 +107,47 @@ export default function BulkQCPage() {
 
   useEffect(() => {
     fetchResults();
-    // Poll for updates every 5 seconds
-    const interval = setInterval(fetchResults, 5000);
+    const interval = setInterval(fetchResults, 10000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const fetchUsage = async () => {
+      try {
+        setUsageLoading(true);
+        const [subRes, usageRes] = await Promise.all([
+          fetch("/api/billing/subscription"),
+          fetch("/api/billing/usage"),
+        ]);
+
+        if (subRes.ok) {
+          const data = await subRes.json();
+          const planSlug = data?.subscription?.plan?.slug || null;
+          const qcLevelValue = data?.limits?.qcLevel || "none";
+          setQcLevel(qcLevelValue);
+          setSubscriptionTier(planSlug as "free" | "mid" | "enterprise" | null);
+          if (qcLevelValue === "none") {
+            setUpgradeRequired(true);
+          }
+        }
+
+        if (usageRes.ok) {
+          const usageData = await usageRes.json();
+          const limit = usageData?.limits?.includedSeriesPerBillingCycle ?? null;
+          const remaining = usageData?.limits?.remainingSeries ?? null;
+          setSeriesLimit(limit);
+          setSeriesRemaining(remaining);
+          if (limit !== null && remaining !== null && remaining <= 0) {
+            setLimitReached(true);
+          }
+        }
+      } catch (err) {
+        console.error("Error loading usage/subscription", err);
+      } finally {
+        setUsageLoading(false);
+      }
+    };
+    fetchUsage();
   }, []);
 
   const handleDownload = async (result: BulkQCResult) => {
@@ -130,6 +176,61 @@ export default function BulkQCPage() {
     });
   };
 
+  const handleExportToSheets = async () => {
+    if (!currentProjectId && results.length > 0) {
+      const projectIds = [...new Set(results.map((r) => r.project?.code).filter(Boolean))];
+      if (projectIds.length === 0) {
+        alert("No project found. Please ensure QC results are linked to a project.");
+        return;
+      }
+      if (projectIds.length > 1) {
+        alert("Multiple projects found. Please filter to a single project first.");
+        return;
+      }
+      setCurrentProjectId(projectIds[0] || null);
+    }
+
+    const projectId = currentProjectId || results[0]?.project?.code;
+    if (!projectId) {
+      alert("No project found for export.");
+      return;
+    }
+
+    setExporting(true);
+    try {
+      const project = results[0]?.project;
+      const response = await fetch("/api/qc/export-to-sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          projectName: project?.name || project?.code,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to export to Google Sheets");
+      }
+
+      // Open the sheet in a new tab
+      if (data.sheetUrl) {
+        window.open(data.sheetUrl, "_blank");
+      }
+      
+      const message = data.isNewSheet 
+        ? `Created new QC sheet and exported ${data.rowCount} result(s)!`
+        : `Updated QC sheet with ${data.rowCount} result(s)!`;
+      
+      alert(message);
+    } catch (error: any) {
+      alert(`Export failed: ${error.message}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const getErrorCount = (result: BulkQCResult) => {
     if (result.qc_errors && Array.isArray(result.qc_errors)) {
       return result.qc_errors.length;
@@ -140,245 +241,275 @@ export default function BulkQCPage() {
     return 0;
   };
 
-  const PRO_BULK_QC_LIMIT = 50;
-  const isFree = subscriptionTier === "free";
-  const isPro = subscriptionTier === "pro";
+  const isFree = subscriptionTier === "free" || qcLevel === "none";
+  const isMid = subscriptionTier === "mid";
   const isEnterprise = subscriptionTier === "enterprise";
-  const proLimitReached = isPro && qcCount >= PRO_BULK_QC_LIMIT;
+  const midLimitReached = isMid && seriesLimit !== null && seriesRemaining !== null && seriesRemaining <= 0;
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-semibold text-white mb-2">Bulk QC Analysis</h1>
-        <p className="text-zinc-400">
-          Upload multiple video and SRT files for automated quality control
-        </p>
-      </div>
+    <div className="min-h-screen bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        {/* Header Section - Apple-like minimalism */}
+        <div className="space-y-2">
+          <h1 className="text-4xl font-light tracking-tight text-white">
+            Bulk QC Analysis
+          </h1>
+          <p className="text-zinc-400 text-lg font-light">
+            Upload multiple video and subtitle files for automated quality control
+          </p>
+        </div>
 
-      {/* Upload Section */}
-      <Card className="glass border-zinc-800/50">
-        <CardHeader>
-          <CardTitle className="text-white">Upload Files for QC</CardTitle>
-          <CardDescription className="text-zinc-400">
-            Plan:{" "}
-            <span className="capitalize">
-              {subscriptionTier || "loading..."}
-            </span>
-            {isPro && (
-              <> • Used {qcCount}/{PRO_BULK_QC_LIMIT} bulk QC jobs</>
+        {/* Plan Status - Minimal badge */}
+        {!usageLoading && subscriptionTier && (
+          <div className="flex items-center gap-3">
+            <Badge
+              variant="outline"
+              className={cn(
+                "border px-3 py-1 text-xs font-normal",
+                subscriptionTier === "enterprise"
+                  ? "border-purple-500/30 text-purple-400 bg-purple-500/10"
+                  : subscriptionTier === "mid"
+                  ? "border-blue-500/30 text-blue-400 bg-blue-500/10"
+                  : "border-zinc-700/50 text-zinc-500 bg-zinc-800/30"
+              )}
+            >
+              {subscriptionTier.charAt(0).toUpperCase() + subscriptionTier.slice(1)} Plan
+            </Badge>
+            {seriesLimit !== null && (
+              <span className="text-sm text-zinc-500">
+                {seriesLimit - (seriesRemaining ?? 0)}/{seriesLimit} series used
+              </span>
             )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+          </div>
+        )}
+
+        {/* Upload Section - Clean, spacious design */}
+        <div className="space-y-6">
           {isFree ? (
-            <div className="space-y-3 text-sm text-zinc-400">
-              <p>
-                Bulk QC is a <span className="text-white font-medium">paid feature</span>.
-              </p>
-              <p>
-                Upgrade to the <span className="text-blue-400 font-medium">Pro</span> or{" "}
-                <span className="text-purple-400 font-medium">Enterprise</span> plan to enable
-                automated QC across entire projects.
-              </p>
-              <Button
-                className="mt-2"
-                onClick={() => {
-                  window.location.href = "/dashboard/settings";
-                }}
-              >
-                View Plans
-              </Button>
-            </div>
-          ) : proLimitReached ? (
-            <div className="space-y-3 text-sm text-zinc-400">
-              <p>
-                You have reached your{" "}
-                <span className="text-blue-400 font-medium">Pro</span> bulk QC limit of{" "}
-                <span className="text-white font-semibold">{PRO_BULK_QC_LIMIT}</span> jobs.
-              </p>
-              <p>
-                Upgrade to <span className="text-purple-400 font-medium">Enterprise</span> for
-                unlimited bulk QC.
-              </p>
-              <Button
-                className="mt-2"
-                variant="outline"
-                onClick={() => {
-                  window.location.href = "/dashboard/settings";
-                }}
-              >
-                Manage Subscription
-              </Button>
-            </div>
+            <Card className="border-zinc-800/50 bg-zinc-900/20 backdrop-blur-xl">
+              <CardContent className="p-12 text-center">
+                <div className="max-w-md mx-auto space-y-4">
+                  <p className="text-zinc-300 text-lg">
+                    Bulk QC is available on paid plans
+                  </p>
+                  <p className="text-zinc-500 text-sm">
+                    Upgrade to Mid or Enterprise to enable automated quality control
+                  </p>
+                  <Button
+                    onClick={() => (window.location.href = "/dashboard/settings")}
+                    className="mt-4"
+                  >
+                    View Plans
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ) : midLimitReached || limitReached ? (
+            <Card className="border-yellow-500/30 bg-yellow-500/5 backdrop-blur-xl">
+              <CardContent className="p-12 text-center">
+                <div className="max-w-md mx-auto space-y-4">
+                  <p className="text-yellow-400 text-lg">
+                    Series limit reached
+                  </p>
+                  <p className="text-zinc-400 text-sm">
+                    Upgrade to Enterprise for unlimited QC or wait for the next billing cycle
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => (window.location.href = "/dashboard/settings")}
+                    className="mt-4"
+                  >
+                    Manage Subscription
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ) : upgradeRequired ? (
+            <Card className="border-zinc-800/50 bg-zinc-900/20 backdrop-blur-xl">
+              <CardContent className="p-12 text-center">
+                <div className="max-w-md mx-auto space-y-4">
+                  <p className="text-zinc-300 text-lg">
+                    QC not available on your plan
+                  </p>
+                  <p className="text-zinc-500 text-sm">
+                    Upgrade to enable automated QC
+                  </p>
+                  <Button
+                    onClick={() => (window.location.href = "/dashboard/settings")}
+                    className="mt-4"
+                  >
+                    Upgrade Plan
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           ) : (
             <BulkQCUpload onUploadComplete={fetchResults} />
           )}
-        </CardContent>
-      </Card>
+        </div>
 
-      {/* Results Table */}
-      <Card className="glass border-zinc-800/50">
-        <CardHeader className="flex items-center justify-between pb-2.5 px-6 pt-6">
-          <CardTitle className="text-white text-lg">QC Results</CardTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={fetchResults}
-            disabled={refreshing}
-            className="text-zinc-400 hover:text-white"
-          >
-            {refreshing ? "Refreshing..." : "Refresh"}
-          </Button>
-        </CardHeader>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="p-6 space-y-3">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-10 flex-1" />
-                </div>
-              ))}
+        {/* Results Section - Clean table */}
+        {results.length > 0 && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-light text-white">Recent Results</h2>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExportToSheets}
+                  disabled={exporting || !currentProjectId}
+                  className="text-zinc-400 hover:text-white border-zinc-700"
+                >
+                  <FileSpreadsheet className="h-4 w-4 mr-2" />
+                  {exporting ? "Exporting..." : "Export to Sheets"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={fetchResults}
+                  disabled={refreshing}
+                  className="text-zinc-400 hover:text-white"
+                >
+                  <RefreshCw className={cn("h-4 w-4 mr-2", refreshing && "animate-spin")} />
+                  Refresh
+                </Button>
+              </div>
             </div>
-          ) : results.length === 0 ? (
-            <div className="text-center py-12 px-6">
-              <p className="text-zinc-400">No QC results yet. Upload files to get started.</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-zinc-800/50 hover:bg-zinc-900/30">
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[50px]">
-                      #
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[200px]">
-                      Project Name
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[250px]">
-                      File Name
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[150px]">
-                      Status
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[200px]">
-                      Errors Caught
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[150px]">
-                      Original File Link
-                    </TableHead>
-                    <TableHead className="text-zinc-400 font-medium text-xs uppercase tracking-wider py-2.5 w-[100px] text-right">
-                      Actions
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {results.map((result, index) => {
-                    const errorCount = getErrorCount(result);
-                    const isPassed = result.status === "qc_passed";
 
-                    return (
-                      <TableRow
-                        key={result.id}
-                        className="border-zinc-800/50 hover:bg-zinc-900/30 transition-colors"
-                      >
-                        <TableCell className="py-2">
-                          <span className="text-sm text-zinc-400">{index + 1}</span>
-                        </TableCell>
-                        <TableCell className="py-2">
-                          <div>
-                            <span className="text-sm font-mono font-semibold text-zinc-300">
-                              {result.project?.code || "—"}
-                            </span>
-                            {result.project?.name && (
-                              <p className="text-xs text-zinc-500 truncate">
-                                {result.project.name}
-                              </p>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell className="py-2">
-                          <p className="text-sm font-medium text-white truncate">
-                            {result.original_file_name || result.file_name}
-                          </p>
-                        </TableCell>
-                        <TableCell className="py-2">
-                          <div className="flex items-center gap-2">
-                            {isPassed ? (
-                              <CheckCircle2 className="h-4 w-4 text-green-400" />
+            <Card className="border-zinc-800/50 bg-zinc-900/20 backdrop-blur-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-zinc-800/50 hover:bg-transparent">
+                      <TableHead className="text-zinc-500 font-normal text-xs uppercase tracking-wider">
+                        File
+                      </TableHead>
+                      <TableHead className="text-zinc-500 font-normal text-xs uppercase tracking-wider">
+                        Project
+                      </TableHead>
+                      <TableHead className="text-zinc-500 font-normal text-xs uppercase tracking-wider">
+                        Status
+                      </TableHead>
+                      <TableHead className="text-zinc-500 font-normal text-xs uppercase tracking-wider">
+                        Errors
+                      </TableHead>
+                      <TableHead className="text-zinc-500 font-normal text-xs uppercase tracking-wider text-right">
+                        Actions
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {results.map((result) => {
+                      const errorCount = getErrorCount(result);
+                      const isPassed = result.status === "qc_passed";
+
+                      return (
+                        <TableRow
+                          key={result.id}
+                          className="border-zinc-800/30 hover:bg-zinc-800/20 transition-colors"
+                        >
+                          <TableCell className="py-4">
+                            <p className="text-sm font-medium text-white">
+                              {result.original_file_name || result.file_name}
+                            </p>
+                            <p className="text-xs text-zinc-500 mt-1">
+                              {formatDate(result.created_at)}
+                            </p>
+                          </TableCell>
+                          <TableCell className="py-4">
+                            {result.project ? (
+                              <div>
+                                <span className="text-sm font-mono text-zinc-300">
+                                  {result.project.code}
+                                </span>
+                                <p className="text-xs text-zinc-500 truncate">
+                                  {result.project.name}
+                                </p>
+                              </div>
                             ) : (
-                              <XCircle className="h-4 w-4 text-red-400" />
+                              <span className="text-sm text-zinc-500">—</span>
                             )}
-                            <span
-                              className={cn(
-                                "text-xs font-medium",
-                                isPassed ? "text-green-400" : "text-red-400"
+                          </TableCell>
+                          <TableCell className="py-4">
+                            <div className="flex items-center gap-2">
+                              {isPassed ? (
+                                <CheckCircle2 className="h-4 w-4 text-green-400" />
+                              ) : (
+                                <XCircle className="h-4 w-4 text-red-400" />
                               )}
-                            >
-                              {result.status === "qc_passed"
-                                ? "Passed"
-                                : result.status === "qc_failed"
-                                ? "Failed"
-                                : "Processing"}
-                            </span>
-                          </div>
-                        </TableCell>
-                        <TableCell className="py-2">
-                          {errorCount > 0 ? (
-                            <div className="space-y-1">
-                              <span className="text-sm font-medium text-red-400">
-                                {errorCount} error{errorCount > 1 ? "s" : ""}
+                              <span
+                                className={cn(
+                                  "text-xs font-medium",
+                                  isPassed ? "text-green-400" : "text-red-400"
+                                )}
+                              >
+                                {result.status === "qc_passed"
+                                  ? "Passed"
+                                  : result.status === "qc_failed"
+                                  ? "Failed"
+                                  : "Processing"}
                               </span>
-                              {result.qc_errors && Array.isArray(result.qc_errors) && (
-                                <div className="text-xs text-zinc-500 space-y-0.5">
-                                  {result.qc_errors.slice(0, 3).map((error: any, idx: number) => (
-                                    <div key={idx} className="truncate">
-                                      • {error.type || error.message}
-                                    </div>
-                                  ))}
-                                  {result.qc_errors.length > 3 && (
-                                    <div className="text-zinc-600">
-                                      +{result.qc_errors.length - 3} more
-                                    </div>
-                                  )}
-                                </div>
-                              )}
                             </div>
-                          ) : (
-                            <span className="text-sm text-green-400">No errors</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="py-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDownload(result)}
-                            className="h-7 px-2 text-zinc-400 hover:text-white"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
-                            Open
-                          </Button>
-                        </TableCell>
-                        <TableCell className="py-2 text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDownload(result)}
-                            className="h-7 px-2 text-zinc-400 hover:text-white"
-                          >
-                            <Download className="h-3.5 w-3.5" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                          </TableCell>
+                          <TableCell className="py-4">
+                            {errorCount > 0 ? (
+                              <Badge
+                                variant="outline"
+                                className="border-red-500/30 text-red-400 bg-red-500/10"
+                              >
+                                {errorCount} error{errorCount > 1 ? "s" : ""}
+                              </Badge>
+                            ) : (
+                              <span className="text-sm text-green-400">No errors</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-4 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDownload(result)}
+                                className="h-8 w-8 p-0 text-zinc-400 hover:text-white"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDownload(result)}
+                                className="h-8 w-8 p-0 text-zinc-400 hover:text-white"
+                              >
+                                <Download className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {loading && results.length === 0 && (
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-16 w-full" />
+            ))}
+          </div>
+        )}
+
+        {!loading && results.length === 0 && !isFree && !upgradeRequired && (
+          <Card className="border-zinc-800/50 bg-zinc-900/20 backdrop-blur-xl">
+            <CardContent className="p-12 text-center">
+              <p className="text-zinc-400">No QC results yet. Upload files to get started.</p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   );
 }
-

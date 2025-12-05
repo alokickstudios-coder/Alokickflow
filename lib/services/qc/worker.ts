@@ -1,0 +1,539 @@
+/**
+ * QC Worker - Environment-Agnostic Job Processing
+ * 
+ * This module contains the core worker logic that can run in:
+ * - Local dev (via API route)
+ * - Vercel (via API route + cron)
+ * - Dedicated server (via standalone script)
+ * 
+ * NO environment-specific logic here - pure business logic.
+ */
+
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { runQcForJob, QcJobContext } from "./engine";
+import { getEnabledQCFeatures } from "./engine";
+import { logQCEvent } from "@/lib/utils/qc-logger";
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+function getAdminClient(): SupabaseClient | null {
+  if (!supabaseUrl || !supabaseServiceKey) return null;
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+export interface QcJobRow {
+  id: string;
+  organisation_id: string;
+  project_id: string | null;
+  episode_id: string | null;
+  delivery_id: string | null;
+  source_type: 'upload' | 'drive_link' | null;
+  source_path: string | null;
+  file_name: string | null;
+  status: string;
+  qc_type: string;
+  result_json: any;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+async function processJob(job: QcJobRow, adminClient: SupabaseClient): Promise<QcJobRow> {
+    console.log(`[QCWorker] Processing job ${job.id} for org ${job.organisation_id}`);
+    logQCEvent.qcStarted(job.id, job.organisation_id, job.project_id || "");
+
+    try {
+        // Get enabled features for this organization
+        const featuresEnabled = await getEnabledQCFeatures(job.organisation_id);
+
+        // Resolve file based on source_type
+        const context = await resolveFileContext(job, adminClient);
+
+        // Run QC engine
+        const qcResult = await runQcForJob(job, context, featuresEnabled);
+
+        // Update job with results
+        const { error: resultError } = await adminClient
+            .from("qc_jobs")
+            .update({
+                status: "completed",
+                result_json: qcResult,
+                completed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.id);
+
+        if (resultError) {
+            console.error(`[QCWorker] Error updating job ${job.id} with results:`, resultError);
+            throw resultError;
+        }
+
+        // Update delivery record if linked
+        if (job.delivery_id) {
+            await updateDeliveryRecord(job.delivery_id, qcResult, adminClient);
+        }
+
+        logQCEvent.qcCompleted(job.id, qcResult.status === "passed" ? "passed" : "failed", qcResult.score, job.organisation_id);
+
+        console.log(`[QCWorker] Successfully completed job ${job.id}`);
+        return { ...job, status: "completed", result_json: qcResult };
+    } catch (error: any) {
+        console.error(`[QCWorker] Error processing job ${job.id}:`, error);
+
+        // Mark job as failed
+        await adminClient
+            .from("qc_jobs")
+            .update({
+                status: "failed",
+                error_message: error.message || "Unknown error",
+                completed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.id);
+
+        logQCEvent.qcFailed(job.id, error.message, job.organisation_id);
+
+
+        return { ...job, status: "failed", error_message: error.message || "Unknown error" };
+    }
+}
+
+
+/**
+ * Process a batch of QC jobs
+ * 
+ * @param limit Maximum number of jobs to process
+ * @returns Summary of processed jobs
+ */
+export async function processBatch(limit: number = 5): Promise<{ processed: number; errors: number }> {
+    const adminClient = getAdminClient();
+    if (!adminClient) {
+        throw new Error("Admin client not available - check SUPABASE_SERVICE_ROLE_KEY");
+    }
+
+    const { data: jobs, error: selectError } = await adminClient.rpc('select_and_mark_qc_jobs', { batch_size: limit });
+
+    if (selectError) {
+        console.error("[QCWorker] Error selecting jobs:", selectError);
+        throw selectError;
+    }
+
+    if (!jobs || jobs.length === 0) {
+        return { processed: 0, errors: 0 }; // No jobs available
+    }
+
+    const results = await Promise.all(jobs.map(job => processJob(job as QcJobRow, adminClient)));
+
+    const processed = results.length;
+    const errors = results.filter(r => r.status === 'failed').length;
+
+    return { processed, errors };
+}
+
+/**
+ * Resolve file context based on source_type
+ */
+async function resolveFileContext(
+  job: QcJobRow,
+  adminClient: SupabaseClient
+): Promise<QcJobContext> {
+  if (!job.source_path) {
+    throw new Error("Job missing source_path");
+  }
+
+  if (job.source_type === "drive_link") {
+    // Google Drive file - download via API
+    return await resolveDriveFile(job.source_path, adminClient!, job);
+  } else if (job.source_type === "upload") {
+    // Supabase Storage file - download from bucket
+    return await resolveStorageFile(job.source_path, adminClient!);
+  } else {
+    throw new Error(`Unknown source_type: ${job.source_type}`);
+  }
+}
+
+/**
+ * Resolve file from Google Drive
+ */
+async function resolveDriveFile(
+  driveFileId: string,
+  adminClient: SupabaseClient,
+  job?: QcJobRow
+): Promise<QcJobContext> {
+  console.log(`[QCWorker] Resolving Drive file ${driveFileId} for job ${job?.id}`);
+  
+  // Try to get token from the user who created the job (via delivery)
+  let accessToken: string | null = null;
+  
+  // First, check if token was stored in job metadata (temporary storage)
+  // This is the most reliable source since it's stored at job creation time
+  if (job?.result_json && typeof job.result_json === 'object' && job.result_json !== null) {
+    const metadata = job.result_json as any;
+    if (metadata.google_access_token) {
+      const expiresAt = metadata.token_expires_at ? new Date(metadata.token_expires_at) : null;
+      if (!expiresAt || expiresAt > new Date()) {
+        console.log(`[QCWorker] Found access token in job metadata`);
+        accessToken = metadata.google_access_token;
+        
+        // Clear token from job metadata after reading (for security)
+        // We'll update this after processing
+        try {
+          await adminClient!
+            .from("qc_jobs")
+            .update({
+              result_json: { ...metadata, google_access_token: undefined, token_expires_at: undefined }
+            })
+            .eq("id", job.id);
+        } catch (clearError) {
+          console.warn("[QCWorker] Failed to clear token from job metadata:", clearError);
+        }
+      } else {
+        console.log(`[QCWorker] Token in job metadata expired, will look up fresh token`);
+      }
+    }
+  }
+  
+  if (job?.delivery_id) {
+    // Get the user who created the delivery
+    const { data: delivery, error: deliveryError } = await adminClient!
+      .from("deliveries")
+      .select("vendor_id")
+      .eq("id", job.delivery_id)
+      .maybeSingle();
+    
+    if (deliveryError) {
+      console.warn(`[QCWorker] Error fetching delivery ${job.delivery_id}:`, deliveryError);
+    }
+    
+    if (delivery?.vendor_id) {
+      console.log(`[QCWorker] Looking for token for user ${delivery.vendor_id}`);
+      
+      // Get token from that user (try user_id first, then id)
+      let userTokens: any = null;
+      let tokenError: any = null;
+      
+      // Try user_id first
+      const { data: tokensByUserId, error: errorByUserId } = await adminClient!
+        .from("google_tokens")
+        .select("access_token, expires_at, refresh_token, user_id, id")
+        .eq("user_id", delivery.vendor_id)
+        .maybeSingle();
+
+      if (tokensByUserId) {
+        userTokens = tokensByUserId;
+      } else {
+        // Try id as fallback
+        const { data: tokensById, error: errorById } = await adminClient!
+          .from("google_tokens")
+          .select("access_token, expires_at, refresh_token, user_id, id")
+          .eq("id", delivery.vendor_id)
+          .maybeSingle();
+
+        userTokens = tokensById;
+        tokenError = errorById || errorByUserId;
+      }
+      
+      if (tokenError) {
+        console.warn(`[QCWorker] Error fetching user token:`, tokenError);
+      }
+      
+      const { decrypt, encrypt } = await import("@/lib/utils/crypto");
+
+      if (userTokens?.access_token) {
+        try {
+            const decryptedAccessToken = userTokens.access_token.includes(':') ? await decrypt(userTokens.access_token) : userTokens.access_token;
+            // Check if token is expired
+            const expiresAt = userTokens.expires_at ? new Date(userTokens.expires_at) : null;
+            if (!expiresAt || expiresAt > new Date()) {
+              console.log(`[QCWorker] Found valid access token for user ${delivery.vendor_id}`);
+              accessToken = decryptedAccessToken;
+            } else {
+              console.log(`[QCWorker] Token expired for user ${delivery.vendor_id}, attempting refresh`);
+            }
+        } catch (e) {
+            console.error("Failed to decrypt access token", e);
+        }
+      }
+      
+      // Try to refresh if expired or missing
+      if (!accessToken && userTokens?.refresh_token) {
+        try {
+            const decryptedRefreshToken = userTokens.refresh_token.includes(':') ? await decrypt(userTokens.refresh_token) : userTokens.refresh_token;
+            console.log(`[QCWorker] Refreshing token for user ${delivery.vendor_id}`);
+            const { refreshAccessToken } = await import("@/lib/google-drive/client");
+            const refreshed = await refreshAccessToken(decryptedRefreshToken);
+            accessToken = refreshed.access_token;
+          
+            const encryptedAccessToken = await encrypt(refreshed.access_token);
+            // Update token in DB
+            const updateQuery = userTokens.user_id
+                ? adminClient!.from("google_tokens").update({
+                    access_token: encryptedAccessToken,
+                    expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
+                }).eq("user_id", delivery.vendor_id)
+                : adminClient!.from("google_tokens").update({
+                    access_token: encryptedAccessToken,
+                    expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
+                }).eq("id", userTokens.id || "default");
+
+            await updateQuery;
+            console.log(`[QCWorker] Token refreshed and saved`);
+        } catch (refreshError) {
+          console.warn("[QCWorker] Failed to refresh token:", refreshError);
+        }
+      }
+    }
+  }
+  
+  // Fallback: get any valid token (try id="default" first, then any valid token)
+  if (!accessToken) {
+    console.log(`[QCWorker] Trying fallback: checking for default token or any valid token`);
+    
+    try {
+      // First try id="default" (this is how callback saves it)
+      const { data: defaultToken, error: defaultError } = await adminClient!
+        .from("google_tokens")
+        .select("access_token, expires_at, refresh_token, user_id, id")
+        .eq("id", "default")
+        .maybeSingle();
+      
+      if (defaultError) {
+        // Table might not exist - check error code
+        if (defaultError.code === 'PGRST205' || defaultError.message?.includes('table') || defaultError.message?.includes('schema cache')) {
+          console.error(`[QCWorker] google_tokens table does not exist! Please run: supabase/create-google-tokens-table.sql`);
+          throw new Error("Google tokens table not found. Please run the database migration: supabase/create-google-tokens-table.sql");
+        }
+        console.warn(`[QCWorker] Error fetching default token:`, defaultError);
+      }
+      
+      if (defaultToken?.access_token) {
+        try {
+            const decryptedAccessToken = defaultToken.access_token.includes(':') ? await decrypt(defaultToken.access_token) : defaultToken.access_token;
+            const expiresAt = defaultToken.expires_at ? new Date(defaultToken.expires_at) : null;
+            if (!expiresAt || expiresAt > new Date()) {
+              console.log(`[QCWorker] Found valid default token`);
+              accessToken = decryptedAccessToken;
+            } else if (defaultToken.refresh_token) {
+              // Try to refresh default token
+              try {
+                const decryptedRefreshToken = defaultToken.refresh_token.includes(':') ? await decrypt(defaultToken.refresh_token) : defaultToken.refresh_token;
+                console.log(`[QCWorker] Refreshing default token`);
+                const { refreshAccessToken } = await import("@/lib/google-drive/client");
+                const refreshed = await refreshAccessToken(decryptedRefreshToken);
+                accessToken = refreshed.access_token;
+                
+                const { encrypt } = await import('@/lib/utils/crypto');
+                const encryptedAccessToken = await encrypt(refreshed.access_token);
+
+                // Update in DB
+                await adminClient!
+                  .from("google_tokens")
+                  .update({
+                    access_token: encryptedAccessToken,
+                    expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
+                  })
+                  .eq("id", "default");
+              } catch (refreshError) {
+                console.warn("[QCWorker] Failed to refresh default token:", refreshError);
+              }
+            }
+        } catch (e) {
+            console.error("Failed to decrypt access token", e);
+        }
+      }
+      
+      // If still no token, try any valid token
+      if (!accessToken) {
+        const { data: orgTokens, error: orgTokenError } = await adminClient!
+          .from("google_tokens")
+          .select("access_token, expires_at, refresh_token, user_id, id")
+          .gt("expires_at", new Date().toISOString())
+          .limit(1)
+          .maybeSingle();
+        
+        if (orgTokenError && orgTokenError.code !== 'PGRST205') {
+          console.warn(`[QCWorker] Error fetching any org token:`, orgTokenError);
+        }
+        
+        if (orgTokens?.access_token) {
+            try {
+                const decryptedAccessToken = orgTokens.access_token.includes(':') ? await decrypt(orgTokens.access_token) : orgTokens.access_token;
+                console.log(`[QCWorker] Found valid fallback token`);
+                accessToken = decryptedAccessToken;
+            } catch (e) {
+                console.error("Failed to decrypt access token", e);
+            }
+        } else if (orgTokens?.refresh_token) {
+          // Try to refresh any token
+          try {
+            const decryptedRefreshToken = orgTokens.refresh_token.includes(':') ? await decrypt(orgTokens.refresh_token) : orgTokens.refresh_token;
+            console.log(`[QCWorker] Refreshing any available token`);
+            const { refreshAccessToken } = await import("@/lib/google-drive/client");
+            const refreshed = await refreshAccessToken(decryptedRefreshToken);
+            accessToken = refreshed.access_token;
+          } catch (refreshError) {
+            console.warn("[QCWorker] Failed to refresh any token:", refreshError);
+          }
+        }
+      }
+    } catch (tableError: any) {
+      // If table doesn't exist, provide helpful error
+      if (tableError.code === 'PGRST205' || tableError.message?.includes('table') || tableError.message?.includes('schema cache')) {
+        throw new Error("Google tokens table not found. Please run the database migration: supabase/create-google-tokens-table.sql");
+      }
+      throw tableError;
+    }
+  }
+  
+  // Final fallback: env var
+  if (!accessToken) {
+    accessToken = process.env.GOOGLE_ACCESS_TOKEN || null;
+    if (accessToken) {
+      console.log(`[QCWorker] Using token from environment variable`);
+    }
+  }
+  
+  if (!accessToken) {
+    console.error(`[QCWorker] No Google Drive access token found. Checked:`);
+    console.error(`  - User token (via delivery.vendor_id)`);
+    console.error(`  - Organization tokens`);
+    console.error(`  - Environment variable`);
+    throw new Error("Google Drive access token not configured. Please connect Google Drive in Settings.");
+  }
+  
+  console.log(`[QCWorker] Using access token (length: ${accessToken.length})`);
+
+  // Download file from Drive
+  const downloadUrl = `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`;
+  const response = await fetch(downloadUrl, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download from Google Drive: ${response.statusText}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  // Save to temp location
+  const { writeFile, mkdir } = await import("fs/promises");
+  const { join } = await import("path");
+  const { existsSync } = await import("fs");
+
+  const tempDir = join(process.cwd(), "tmp", "qc-processing");
+  if (!existsSync(tempDir)) {
+    await mkdir(tempDir, { recursive: true });
+  }
+
+  const tempPath = join(tempDir, `${Date.now()}-${driveFileId}`);
+  await writeFile(tempPath, buffer);
+
+  return {
+    filePath: tempPath,
+    fileName: driveFileId,
+    cleanup: async () => {
+      try {
+        const { unlink } = await import("fs/promises");
+        await unlink(tempPath);
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+    },
+  };
+}
+
+/**
+ * Resolve file from Supabase Storage
+ */
+async function resolveStorageFile(
+  storagePath: string,
+  adminClient: SupabaseClient
+): Promise<QcJobContext> {
+  // Download from Supabase Storage
+  const { data, error } = await adminClient!.storage
+    .from("deliveries")
+    .download(storagePath);
+
+  if (error || !data) {
+    throw new Error(`Failed to download from storage: ${error?.message || "Unknown error"}`);
+  }
+
+  const arrayBuffer = await data.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  // Save to temp location
+  const { writeFile, mkdir } = await import("fs/promises");
+  const { join } = await import("path");
+  const { existsSync } = await import("fs");
+
+  const tempDir = join(process.cwd(), "tmp", "qc-processing");
+  if (!existsSync(tempDir)) {
+    await mkdir(tempDir, { recursive: true });
+  }
+
+  const fileName = storagePath.split("/").pop() || "file";
+  const tempPath = join(tempDir, `${Date.now()}-${fileName}`);
+  await writeFile(tempPath, buffer);
+
+  return {
+    filePath: tempPath,
+    fileName,
+    cleanup: async () => {
+      try {
+        const { unlink } = await import("fs/promises");
+        await unlink(tempPath);
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+    },
+  };
+}
+
+/**
+ * Update delivery record with QC results
+ */
+async function updateDeliveryRecord(
+  deliveryId: string,
+  qcResult: any,
+  adminClient: SupabaseClient
+) {
+  const status = qcResult.status === "passed" ? "qc_passed" :
+                 qcResult.status === "failed" ? "qc_failed" : "needs_review";
+
+  // Extract errors array
+  const errors: any[] = [];
+  if (qcResult.basicQC?.audioMissing?.detected) {
+    errors.push({
+      type: "Audio Missing",
+      message: qcResult.basicQC.audioMissing.error,
+      timestamp: 0,
+      severity: "error",
+    });
+  }
+  if (qcResult.basicQC?.loudness?.status === "failed") {
+    errors.push({
+      type: "Loudness Compliance",
+      message: qcResult.basicQC.loudness.message,
+      timestamp: 0,
+      severity: "error",
+    });
+  }
+  // Add more error extraction as needed
+
+  await adminClient!
+    .from("deliveries")
+    .update({
+      status,
+      qc_report: qcResult,
+      qc_errors: errors,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", deliveryId);
+}
+

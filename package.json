@@ -16,6 +16,7 @@
     "analyze": "ANALYZE=true next build",
     "test": "jest",
     "test:watch": "jest --watch",
+    "qc:worker": "node --loader tsx/esm scripts/qcWorker.ts || npx tsx scripts/qcWorker.ts",
     "prepare": "node -e \"try { require('husky').install() } catch (e) {}\""
   },
   "dependencies": {
@@ -73,5 +74,12 @@
     "saas",
     "nextjs",
     "supabase"
-  ]
+  ],
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "tsc --noEmit",
+      "jest --findRelatedTests"
+    ]
+  }
 }

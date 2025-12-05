@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Mail, Lock, LogIn } from "lucide-react";
@@ -16,8 +16,29 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [healthMessage, setHealthMessage] = useState<string | null>(null);
   const router = useRouter();
   const { toast } = useToast();
+
+  // Quick auth health check to surface missing env or connectivity issues
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch("/api/health/auth");
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          setHealthMessage(
+            data?.error ||
+              "Auth is misconfigured. Check Supabase URL/anon key/service key."
+          );
+        }
+      } catch (err) {
+        console.error("Auth health check failed", err);
+        setHealthMessage("Unable to verify auth configuration.");
+      }
+    };
+    checkHealth();
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,9 +64,13 @@ export default function LoginPage() {
         window.location.replace("/dashboard");
       }, 500);
     } catch (error: any) {
+      const msg =
+        error?.message?.includes("Email not confirmed")
+          ? "Email not confirmed. Please check your inbox or contact admin."
+          : error.message || "Invalid email or password";
       toast({
         title: "Login Failed",
-        description: error.message || "Invalid email or password",
+        description: msg,
         variant: "destructive",
       });
       setLoading(false);
@@ -60,6 +85,11 @@ export default function LoginPage() {
         transition={{ duration: 0.3 }}
         className="w-full max-w-md"
       >
+        {healthMessage && (
+          <div className="mb-4 text-sm text-yellow-300 border border-yellow-800/70 bg-yellow-900/20 rounded-md px-3 py-2">
+            {healthMessage}
+          </div>
+        )}
         <Card className="glass border-zinc-800/50">
           <CardHeader className="space-y-1 text-center px-4 sm:px-6 pt-6 sm:pt-8 pb-2">
             <CardTitle className="text-2xl sm:text-3xl font-semibold text-white mb-1 sm:mb-2">

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Plus, Calendar, FolderOpen, PlayCircle } from "lucide-react";
+import { Plus, Calendar, FolderOpen, PlayCircle, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -28,13 +28,34 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface Project {
   id: string;
   code: string;
-  name: string;
+  name:string;
   status?: "active" | "completed" | "archived";
   created_at: string;
+}
+
+interface ProjectStage {
+  id: string;
+  project_id: string;
+  name: string;
+  status: "pending" | "in_progress" | "completed";
+  stage_order: number;
+}
+
+interface TeamMember {
+  id: string;
+  full_name: string | null;
+  role: string;
 }
 
 function StatusBadge({ status }: { status: "active" | "completed" | "archived" }) {
@@ -84,6 +105,8 @@ function ProjectCard({ project, formatDate }: { project: Project; formatDate: (d
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectStages, setProjectStages] = useState<Record<string, ProjectStage[]>>({});
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [formData, setFormData] = useState({ name: "", code: "" });
@@ -127,6 +150,25 @@ export default function ProjectsPage() {
 
       if (error) throw error;
       setProjects(data || []);
+
+      const stagesByProject: Record<string, ProjectStage[]> = {};
+      for (const project of data || []) {
+        const res = await fetch(`/api/projects/${project.id}/stages`);
+        if (res.ok) {
+          const { stages } = await res.json();
+          stagesByProject[project.id] = stages;
+        }
+      }
+      setProjectStages(stagesByProject);
+
+
+      // Fetch team members (non-vendor)
+      const { data: members } = await supabase
+        .from("profiles")
+        .select("id, full_name, role")
+        .eq("organization_id", profile.organization_id)
+        .neq("role", "vendor");
+      if (members) setTeamMembers(members);
 
       // Fetch subscription tier for gating QC features
       const { data: org } = await supabase
@@ -205,6 +247,105 @@ export default function ProjectsPage() {
     }
   };
 
+  const updateProjectStatus = async (project: Project, status: "active" | "completed" | "archived") => {
+    try {
+      const { error } = await supabase.from("projects").update({ status }).eq("id", project.id);
+      if (error) throw error;
+      setProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, status } : p)));
+      toast({
+        title: "Status updated",
+        description: `Project marked as ${status}`,
+        variant: "success",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err.message || "Failed to update status",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const addStage = async (projectId: string) => {
+    const stageName = prompt("Enter stage name:");
+    if (!stageName) return;
+
+    try {
+      const res = await fetch(`/api/projects/${projectId}/stages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: stageName,
+          stage_order: (projectStages[projectId]?.length || 0) + 1,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add stage");
+      fetchProjects();
+      toast({
+        title: "Stage Added",
+        variant: "success",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err.message || "Failed to add stage",
+        variant: "destructive",
+      });
+    }
+  };
+  
+  const deleteStage = async (projectId: string, stageId: string) => {
+    if (!confirm("Are you sure you want to delete this stage?")) return;
+  
+    try {
+      const res = await fetch(`/api/projects/${projectId}/stages/${stageId}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete stage");
+      fetchProjects();
+      toast({
+        title: "Stage Deleted",
+        variant: "success",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err.message || "Failed to delete stage",
+        variant: "destructive",
+      });
+    }
+  };
+  
+
+  const updateStage = async (
+    projectId: string,
+    stageId: string,
+    updates: Partial<ProjectStage>
+  ) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/stages/${stageId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update stage");
+      fetchProjects();
+      toast({
+        title: "Stage updated",
+        variant: "success",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err.message || "Failed to update stage",
+        variant: "destructive",
+      });
+    }
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
       year: "numeric",
@@ -214,6 +355,9 @@ export default function ProjectsPage() {
   };
 
   const handleBeginQC = (project: Project) => {
+    const stages = projectStages[project.id] || [];
+    const allStagesCompleted = stages.length > 0 && stages.every((s) => s.status === "completed");
+
     if (!subscriptionTier) {
       toast({
         title: "Please wait",
@@ -223,10 +367,10 @@ export default function ProjectsPage() {
       return;
     }
 
-    if (project.status !== "completed") {
+    if (!allStagesCompleted) {
       toast({
-        title: "Project not ready for QC",
-        description: "Mark the project as completed before starting Bulk QC.",
+        title: "Project stages incomplete",
+        description: "Complete all project stages before starting Bulk QC.",
         variant: "destructive",
       });
       return;
@@ -243,9 +387,51 @@ export default function ProjectsPage() {
     }
 
     // For Pro and Enterprise, navigate to Bulk QC with project context
-    window.location.href = `/dashboard/qc/bulk?projectId=${project.id}&code=${encodeURIComponent(
+    window.location.href = `/dashboard/qc?projectId=${project.id}&code=${encodeURIComponent(
       project.code
     )}`;
+  };
+
+  const renderStages = (projectId: string) => {
+    const stages = projectStages[projectId] || [];
+  
+    return (
+      <div className="flex flex-col gap-2">
+        {stages.map((stage) => (
+          <div
+            key={stage.id}
+            className="flex items-center gap-2 border border-zinc-800/60 rounded-lg px-3 py-2 bg-zinc-900/40"
+          >
+            <Input
+              defaultValue={stage.name}
+              onBlur={(e) => updateStage(projectId, stage.id, { name: e.target.value })}
+              className="text-sm text-white w-28 bg-transparent border-none"
+            />
+            <Select
+              value={stage.status}
+              onValueChange={(val) =>
+                updateStage(projectId, stage.id, { status: val as ProjectStage["status"] })
+              }
+            >
+              <SelectTrigger className="w-32">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="in_progress">In Progress</SelectItem>
+                <SelectItem value="completed">Completed</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="ghost" size="icon" onClick={() => deleteStage(projectId, stage.id)}>
+              <Trash2 className="h-4 w-4 text-red-500" />
+            </Button>
+          </div>
+        ))}
+        <Button variant="outline" size="sm" onClick={() => addStage(projectId)}>
+          <Plus className="h-4 w-4 mr-2" /> Add Stage
+        </Button>
+      </div>
+    );
   };
 
   return (
@@ -368,6 +554,7 @@ export default function ProjectsPage() {
                     <TableRow className="border-zinc-800/50 hover:bg-zinc-900/30">
                       <TableHead className="text-zinc-400">Project Code</TableHead>
                       <TableHead className="text-zinc-400">Name</TableHead>
+                      <TableHead className="text-zinc-400">Stages</TableHead>
                       <TableHead className="text-zinc-400">Status</TableHead>
                       <TableHead className="text-zinc-400">Created Date</TableHead>
                       <TableHead className="text-zinc-400 text-right">Actions</TableHead>
@@ -388,8 +575,25 @@ export default function ProjectsPage() {
                         <TableCell className="text-zinc-300">
                           {project.name}
                         </TableCell>
+                        <TableCell className="text-zinc-300">{renderStages(project.id)}</TableCell>
                         <TableCell>
-                          <StatusBadge status={project.status ?? "active"} />
+                          <Select
+                            value={project.status ?? "active"}
+                            onValueChange={(val) => {
+                              if (val && (val === "active" || val === "completed" || val === "archived")) {
+                                updateProjectStatus(project, val);
+                              }
+                            }}
+                          >
+                            <SelectTrigger className="w-36">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="active">Active</SelectItem>
+                              <SelectItem value="completed">Completed</SelectItem>
+                              <SelectItem value="archived">Archived</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </TableCell>
                         <TableCell className="text-zinc-400">
                           <div className="flex items-center gap-2">

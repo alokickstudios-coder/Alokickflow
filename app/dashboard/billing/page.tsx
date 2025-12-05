@@ -2,133 +2,114 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Check, Sparkles, Zap, Crown, CreditCard, ExternalLink } from "lucide-react";
+import { Check, Zap, Crown, CreditCard, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { PLANS, PlanSlug } from "@/config/subscriptionConfig";
+import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
 
-interface Organization {
-  id: string;
-  name: string;
-  subscription_tier: "free" | "pro" | "enterprise";
-  stripe_customer_id: string | null;
+interface SubscriptionData {
+  subscription: {
+    plan: {
+      slug: PlanSlug;
+      name: string;
+      description: string;
+    };
+    status: string;
+    current_period_start: string;
+    current_period_end: string;
+    billing_cycle: string;
+  };
+  limits: {
+    maxVendors: number | null;
+    maxTeamMembers: number | null;
+    includedSeriesPerBillingCycle: number | null;
+    qcLevel: string;
+  };
+  enabledAddons: string[];
 }
 
-const plans = [
-  {
-    name: "Free",
-    tier: "free",
-    price: 0,
-    icon: Sparkles,
-    description: "Perfect for getting started",
-    features: [
-      "1 project",
-      "2 vendors",
-      "1GB storage",
-      "50 deliveries/month",
-      "Basic QC checks",
-    ],
-  },
-  {
-    name: "Pro",
-    tier: "pro",
-    price: 49,
-    icon: Zap,
-    description: "For growing production teams",
-    features: [
-      "10 projects",
-      "Unlimited vendors",
-      "50GB storage",
-      "500 deliveries/month",
-      "Advanced QC checks",
-      "Email support",
-      "Custom QC rules",
-    ],
-    popular: true,
-  },
-  {
-    name: "Enterprise",
-    tier: "enterprise",
-    price: 199,
-    icon: Crown,
-    description: "For large-scale operations",
-    features: [
-      "Unlimited projects",
-      "Unlimited vendors",
-      "500GB storage",
-      "Unlimited deliveries",
-      "All QC features",
-      "Priority support",
-      "API access",
-      "Custom integrations",
-      "SSO support",
-    ],
-  },
-];
+interface UsageData {
+  usage: {
+    series_count: number;
+    episode_count: number;
+    qc_minutes: number;
+    period_start: string;
+    period_end: string;
+  };
+  limits: {
+    includedSeriesPerBillingCycle: number | null;
+    remainingSeries: number | null;
+    percentageUsed: number | null;
+  };
+}
 
 export default function BillingPage() {
-  const [organization, setOrganization] = useState<Organization | null>(null);
+  const [subscription, setSubscription] = useState<SubscriptionData | null>(null);
+  const [usage, setUsage] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
-    fetchOrganization();
+    fetchData();
   }, []);
 
-  const fetchOrganization = async () => {
+  const fetchData = async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      const [subRes, usageRes] = await Promise.all([
+        fetch("/api/billing/subscription"),
+        fetch("/api/billing/usage"),
+      ]);
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id")
-        .eq("id", user.id)
-        .single();
+      if (subRes.ok) {
+        const subData = await subRes.json();
+        setSubscription(subData);
+      }
 
-      if (!profile?.organization_id) return;
-
-      const { data: org } = await supabase
-        .from("organizations")
-        .select("*")
-        .eq("id", profile.organization_id)
-        .single();
-
-      setOrganization(org);
+      if (usageRes.ok) {
+        const usageData = await usageRes.json();
+        setUsage(usageData);
+      }
     } catch (error) {
-      console.error("Error fetching organization:", error);
+      console.error("Error fetching billing data:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load billing information",
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleUpgrade = async (tier: string) => {
+  const handleChangePlan = async (planSlug: PlanSlug) => {
     setProcessing(true);
-
     try {
-      const response = await fetch("/api/stripe/create-checkout", {
+      const response = await fetch("/api/billing/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tier }),
+        body: JSON.stringify({ planSlug, billingCycle: "monthly" }),
       });
 
       const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to change plan");
 
-      if (!response.ok) throw new Error(data.error);
-
-      // Redirect to Stripe checkout
-      if (data.url) {
-        window.location.href = data.url;
-      }
+      toast({
+        title: "Plan Updated",
+        description: `Successfully switched to ${data.subscription.plan.name} plan`,
+        variant: "success",
+      });
+      fetchData();
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error.message || "Failed to start checkout",
+        description: error.message || "Failed to change plan",
         variant: "destructive",
       });
     } finally {
@@ -138,15 +119,13 @@ export default function BillingPage() {
 
   const handleManageSubscription = async () => {
     setProcessing(true);
-
     try {
-      const response = await fetch("/api/stripe/customer-portal", {
+      const response = await fetch("/api/billing/createPortalSession", {
         method: "POST",
       });
 
       const data = await response.json();
-
-      if (!response.ok) throw new Error(data.error);
+      if (!response.ok) throw new Error(data.error || "Failed to open portal");
 
       if (data.url) {
         window.location.href = data.url;
@@ -161,6 +140,12 @@ export default function BillingPage() {
       setProcessing(false);
     }
   };
+
+  const currentPlanSlug = subscription?.subscription?.plan?.slug || "free";
+  const plans = Object.values(PLANS).map((plan) => ({
+    ...plan,
+    icon: plan.slug === "free" ? Zap : plan.slug === "mid" ? Crown : Crown,
+  }));
 
   return (
     <div className="space-y-8">
@@ -184,33 +169,117 @@ export default function BillingPage() {
             <Skeleton className="h-10 w-40" />
           </CardContent>
         </Card>
-      ) : organization && (
+      ) : subscription ? (
         <Card className="glass border-zinc-800/50">
           <CardHeader>
-            <CardTitle className="text-white">Current Plan</CardTitle>
-            <CardDescription>
-              You are currently on the{" "}
-              <span className="font-semibold text-white">
-                {organization.subscription_tier.charAt(0).toUpperCase() +
-                  organization.subscription_tier.slice(1)}
-              </span>{" "}
-              plan
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {organization.stripe_customer_id && (
-              <Button
-                onClick={handleManageSubscription}
-                disabled={processing}
-                variant="outline"
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-white">
+                  {subscription.subscription.plan.name} Plan
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {subscription.subscription.plan.description}
+                </CardDescription>
+              </div>
+              <Badge
+                className={cn(
+                  "border",
+                  subscription.subscription.status === "active"
+                    ? "bg-green-500/10 text-green-400 border-green-500/20"
+                    : subscription.subscription.status === "past_due"
+                    ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
+                    : "bg-zinc-500/10 text-zinc-400 border-zinc-500/20"
+                )}
               >
-                <CreditCard className="h-4 w-4 mr-2" />
-                {processing ? "Loading..." : "Manage Subscription"}
-              </Button>
+                {subscription.subscription.status.charAt(0).toUpperCase() +
+                  subscription.subscription.status.slice(1)}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <p className="text-sm text-zinc-400 mb-1">Vendors</p>
+                <p className="text-white font-medium">
+                  {subscription.limits.maxVendors === null
+                    ? "Unlimited"
+                    : `Up to ${subscription.limits.maxVendors}`}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-zinc-400 mb-1">Team Members</p>
+                <p className="text-white font-medium">
+                  {subscription.limits.maxTeamMembers === null
+                    ? "Unlimited"
+                    : `Up to ${subscription.limits.maxTeamMembers}`}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-zinc-400 mb-1">Series per Period</p>
+                <p className="text-white font-medium">
+                  {subscription.limits.includedSeriesPerBillingCycle === null
+                    ? "Unlimited"
+                    : subscription.limits.includedSeriesPerBillingCycle}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-zinc-400 mb-1">QC Level</p>
+                <p className="text-white font-medium capitalize">
+                  {subscription.limits.qcLevel}
+                </p>
+              </div>
+            </div>
+
+            {usage && subscription.limits.includedSeriesPerBillingCycle !== null && (
+              <div className="space-y-2 pt-4 border-t border-zinc-800">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-zinc-400">Series Usage</span>
+                  <span className="text-white">
+                    {usage.usage.series_count} /{" "}
+                    {subscription.limits.includedSeriesPerBillingCycle}
+                  </span>
+                </div>
+                <Progress
+                  value={usage.limits.percentageUsed || 0}
+                  className="h-2"
+                />
+                {usage.limits.remainingSeries !== null && (
+                  <p className="text-xs text-zinc-500">
+                    {usage.limits.remainingSeries} series remaining this period
+                  </p>
+                )}
+              </div>
             )}
+
+            {subscription.enabledAddons.length > 0 && (
+              <div className="pt-4 border-t border-zinc-800">
+                <p className="text-sm text-zinc-400 mb-2">Enabled Add-ons</p>
+                <div className="flex flex-wrap gap-2">
+                  {subscription.enabledAddons.map((addon) => (
+                    <Badge
+                      key={addon}
+                      variant="outline"
+                      className="border-green-500/20 text-green-400 bg-green-500/10"
+                    >
+                      {addon.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <Button
+              onClick={handleManageSubscription}
+              disabled={processing}
+              variant="outline"
+              className="w-full"
+            >
+              <CreditCard className="h-4 w-4 mr-2" />
+              {processing ? "Loading..." : "Manage Subscription"}
+            </Button>
           </CardContent>
         </Card>
-      )}
+      ) : null}
 
       {/* Pricing Plans */}
       <div>
@@ -220,12 +289,11 @@ export default function BillingPage() {
         <div className="grid gap-6 md:grid-cols-3">
           {plans.map((plan, index) => {
             const Icon = plan.icon;
-            const isCurrentPlan =
-              organization?.subscription_tier === plan.tier;
+            const isCurrentPlan = currentPlanSlug === plan.slug;
 
             return (
               <motion.div
-                key={plan.tier}
+                key={plan.slug}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: index * 0.1 }}
@@ -233,13 +301,13 @@ export default function BillingPage() {
                 <Card
                   className={cn(
                     "glass relative overflow-hidden",
-                    plan.popular
+                    plan.slug === "mid"
                       ? "border-blue-500/50 shadow-lg shadow-blue-500/20"
                       : "border-zinc-800/50",
                     isCurrentPlan && "border-green-500/50"
                   )}
                 >
-                  {plan.popular && (
+                  {plan.slug === "mid" && (
                     <div className="absolute top-0 right-0 bg-blue-500 text-white text-xs font-bold px-3 py-1">
                       POPULAR
                     </div>
@@ -257,7 +325,7 @@ export default function BillingPage() {
                     </div>
                     <div className="mb-4">
                       <span className="text-4xl font-bold text-white">
-                        ${plan.price}
+                        ₹{plan.pricing.monthly.toLocaleString()}
                       </span>
                       <span className="text-zinc-400 ml-2">/month</span>
                     </div>
@@ -267,32 +335,66 @@ export default function BillingPage() {
                   </CardHeader>
                   <CardContent className="space-y-6">
                     <ul className="space-y-3">
-                      {plan.features.map((feature, idx) => (
-                        <li key={idx} className="flex items-start gap-3">
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-green-400 shrink-0 mt-0.5" />
+                        <span className="text-sm text-zinc-300">
+                          {plan.maxVendors === null
+                            ? "Unlimited"
+                            : `${plan.maxVendors}`}{" "}
+                          vendors
+                        </span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-green-400 shrink-0 mt-0.5" />
+                        <span className="text-sm text-zinc-300">
+                          {plan.maxTeamMembers === null
+                            ? "Unlimited"
+                            : `${plan.maxTeamMembers}`}{" "}
+                          team members
+                        </span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-green-400 shrink-0 mt-0.5" />
+                        <span className="text-sm text-zinc-300">
+                          {plan.includedSeriesPerBillingCycle === null
+                            ? "Unlimited"
+                            : `${plan.includedSeriesPerBillingCycle}`}{" "}
+                          series per billing cycle
+                        </span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-green-400 shrink-0 mt-0.5" />
+                        <span className="text-sm text-zinc-300">
+                          QC Level: {plan.qcLevel}
+                        </span>
+                      </li>
+                      {plan.slug === "mid" && plan.perSeriesOverageFee && (
+                        <li className="flex items-start gap-3">
                           <Check className="h-5 w-5 text-green-400 shrink-0 mt-0.5" />
-                          <span className="text-sm text-zinc-300">{feature}</span>
+                          <span className="text-sm text-zinc-300">
+                            ₹{plan.perSeriesOverageFee} per series overage
+                          </span>
                         </li>
-                      ))}
+                      )}
                     </ul>
                     {isCurrentPlan ? (
                       <Button className="w-full" disabled variant="outline">
                         Current Plan
                       </Button>
-                    ) : plan.tier === "free" ? (
-                      <Button
-                        className="w-full"
-                        variant="outline"
-                        disabled={organization?.subscription_tier === "free"}
-                      >
-                        Current Plan
-                      </Button>
                     ) : (
                       <Button
                         className="w-full"
-                        onClick={() => handleUpgrade(plan.tier)}
+                        onClick={() => handleChangePlan(plan.slug)}
                         disabled={processing}
                       >
-                        {processing ? "Loading..." : "Upgrade Now"}
+                        {processing ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Processing...
+                          </>
+                        ) : (
+                          "Switch Plan"
+                        )}
                       </Button>
                     )}
                   </CardContent>
@@ -305,4 +407,3 @@ export default function BillingPage() {
     </div>
   );
 }
-

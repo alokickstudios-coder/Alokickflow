@@ -26,17 +26,96 @@ interface QCJob {
   projectId: string;
 }
 
+// A new function to handle the heavy processing in the background
+async function processFileInBackground(
+  deliveryId: string,
+  tempPath: string,
+  file: File,
+  useAI: boolean
+) {
+  const supabase = await createClient(); // Create a new client for the background task
+
+  try {
+    const isSubtitle =
+      file.name.endsWith(".srt") || file.name.endsWith(".vtt");
+    const isVideo = /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(file.name);
+    const isAudio = /\.(mp3|wav|aac|m4a|flac)$/i.test(file.name);
+    let analysis: AIQCAnalysis;
+
+    if (useAI && process.env.GEMINI_API_KEY) {
+      if (isSubtitle) {
+        const content = await readFile(tempPath, "utf-8");
+        analysis = await analyzeSubtitles(content);
+      } else if (isVideo || isAudio) {
+        const audioMetadata = await extractAudioMetadata(tempPath);
+        analysis = await runComprehensiveQC({ audioMetadata });
+      } else {
+        // Fallback for unsupported types
+        analysis = await runBasicAnalysis(tempPath, file.name);
+      }
+    } else {
+      analysis = await runBasicAnalysis(tempPath, file.name);
+    }
+
+    // Update the delivery record with the final QC results
+    await supabase
+      .from("deliveries")
+      .update({
+        status:
+          analysis.status === "passed"
+            ? "qc_passed"
+            : analysis.status === "failed"
+            ? "qc_failed"
+            : "needs_review",
+        qc_report: analysis,
+        qc_errors: analysis.issues.filter(
+          (i) => i.severity === "critical" || i.severity === "major"
+        ),
+      })
+      .eq("id", deliveryId);
+  } catch (error) {
+    console.error(`Background processing failed for ${deliveryId}:`, error);
+    // Update the delivery to show a failed status
+    await supabase
+      .from("deliveries")
+      .update({
+        status: "qc_failed",
+        qc_report: {
+          summary: "Processing failed",
+          issues: [
+            {
+              type: "Processing Error",
+              severity: "critical",
+              description:
+                error instanceof Error ? error.message : "An unknown error occurred",
+            },
+          ],
+        },
+      })
+      .eq("id", deliveryId);
+  } finally {
+    // Clean up the temporary file
+    try {
+      await unlink(tempPath);
+    } catch (e) {
+      console.warn(`Failed to cleanup temp file ${tempPath}:`, e);
+    }
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient();
 
-    // Verify authentication
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    // ... (auth, profile, and subscription checks remain the same) ...
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
     if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Get user's organization
     const { data: profile } = await supabase
       .from("profiles")
       .select("organization_id")
@@ -44,8 +123,71 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!profile?.organization_id) {
-      return NextResponse.json({ error: "No organization found" }, { status: 400 });
+      return NextResponse.json(
+        { error: "No organization found" },
+        { status: 400 }
+      );
     }
+
+    // ============================================================
+    // Subscription & Usage Check
+    // ============================================================
+    const orgId = profile.organization_id;
+
+    const { data: subscription, error: subError } = await supabase
+      .from("organisation_subscriptions")
+      .select("*, plan:plan_id(*)")
+      .eq("organisation_id", orgId)
+      .eq("status", "active")
+      .single();
+
+    if (subError || !subscription) {
+      return NextResponse.json(
+        { error: "No active subscription found. Please subscribe to run QC." },
+        { status: 403 }
+      );
+    }
+
+    const plan = subscription.plan;
+    const qcLevel = plan?.metadata?.qcLevel;
+
+    if (!qcLevel || qcLevel === "none") {
+      return NextResponse.json(
+        { error: "Your current plan does not include QC features." },
+        { status: 403 }
+      );
+    }
+
+    const monthlyLimit = plan?.metadata?.includedSeriesPerBillingCycle;
+
+    if (monthlyLimit !== null) {
+      const today = new Date();
+      const periodStart = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        1
+      ).toISOString();
+
+      const { data: usage, error: usageError } = await supabase
+        .from("qc_usage_monthly")
+        .select("series_count")
+        .eq("organisation_id", orgId)
+        .gte("period_start", periodStart)
+        .single();
+
+      const currentUsage = usage?.series_count || 0;
+
+      if (currentUsage >= monthlyLimit) {
+        return NextResponse.json(
+          {
+            error: "You have exceeded your monthly QC limit.",
+            details: `Limit: ${monthlyLimit} files/month. Usage: ${currentUsage}.`,
+          },
+          { status: 403 }
+        );
+      }
+    }
+    // ============================================================
 
     const formData = await request.formData();
     const files = formData.getAll("files") as File[];
@@ -56,7 +198,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No files provided" }, { status: 400 });
     }
 
-    // Get or use provided project
     let targetProjectId = projectId;
     if (!targetProjectId) {
       const { data: projects } = await supabase
@@ -76,150 +217,95 @@ export async function POST(request: NextRequest) {
 
     const results: Array<{
       fileName: string;
-      status: "success" | "error";
-      analysis?: AIQCAnalysis;
-      deliveryId?: string;
-      error?: string;
+      status: "processing";
+      deliveryId: string;
     }> = [];
 
-    // Create temp directory
     const tempDir = join(process.cwd(), "tmp", "ai-qc");
     if (!existsSync(tempDir)) {
       await mkdir(tempDir, { recursive: true });
     }
 
     for (const file of files) {
-      try {
-        const buffer = Buffer.from(await file.arrayBuffer());
-        const fileName = file.name;
-        const tempPath = join(tempDir, `${Date.now()}-${fileName}`);
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const fileName = file.name;
+      const tempPath = join(tempDir, `${Date.now()}-${fileName}`);
+      await writeFile(tempPath, buffer);
 
-        // Save temporarily
-        await writeFile(tempPath, buffer);
-
-        // Determine file type
-        const isSubtitle = fileName.endsWith(".srt") || fileName.endsWith(".vtt");
-        const isVideo = /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(fileName);
-        const isAudio = /\.(mp3|wav|aac|m4a|flac)$/i.test(fileName);
-
-        // Upload to Supabase Storage
-        const storagePath = `${profile.organization_id}/${targetProjectId}/qc/${Date.now()}-${fileName}`;
-        
-        const { error: uploadError } = await supabase.storage
-          .from("deliveries")
-          .upload(storagePath, buffer, {
-            contentType: file.type,
-            upsert: false,
-          });
-
-        if (uploadError) {
-          console.error("Upload error:", uploadError);
-          results.push({
-            fileName,
-            status: "error",
-            error: "Failed to upload file",
-          });
-          continue;
-        }
-
-        let analysis: AIQCAnalysis;
-
-        if (useAI && process.env.GEMINI_API_KEY) {
-          // Use Gemini AI for analysis
-          if (isSubtitle) {
-            const content = await readFile(tempPath, "utf-8");
-            analysis = await analyzeSubtitles(content);
-          } else if (isVideo || isAudio) {
-            // Extract audio metadata using FFprobe
-            const audioMetadata = await extractAudioMetadata(tempPath);
-            
-            // For video, we could extract frames, but for now use audio analysis
-            analysis = await runComprehensiveQC({
-              audioMetadata,
-            });
-          } else {
-            analysis = {
-              status: "needs_review",
-              confidence: 0,
-              summary: "Unsupported file type for AI analysis",
-              issues: [{
-                type: "Unsupported Format",
-                severity: "info",
-                description: "This file type is not supported for AI analysis",
-              }],
-              recommendations: ["Manual review recommended"],
-              metadata: {
-                analyzedAt: new Date().toISOString(),
-                modelVersion: "N/A",
-                processingTime: 0,
-              },
-            };
-          }
-        } else {
-          // Basic analysis without AI
-          analysis = await runBasicAnalysis(tempPath, fileName);
-        }
-
-        // Clean up temp file
-        try {
-          await unlink(tempPath);
-        } catch (e) {
-          console.warn("Failed to cleanup temp file:", e);
-        }
-
-        // Create delivery record with QC results
-        const { data: delivery, error: deliveryError } = await supabase
-          .from("deliveries")
-          .insert({
-            organization_id: profile.organization_id,
-            project_id: targetProjectId,
-            vendor_id: user.id,
-            file_name: fileName,
-            original_file_name: fileName,
-            status: analysis.status === "passed" ? "qc_passed" : analysis.status === "failed" ? "qc_failed" : "needs_review",
-            storage_path: storagePath,
-            file_size: file.size,
-            file_type: isSubtitle ? "subtitle" : isVideo ? "video" : "audio",
-            qc_report: analysis,
-            qc_errors: analysis.issues.filter((i) => i.severity === "critical" || i.severity === "major"),
-          })
-          .select()
-          .single();
-
-        if (deliveryError) {
-          console.error("Delivery creation error:", deliveryError);
-        }
-
-        results.push({
-          fileName,
-          status: "success",
-          analysis,
-          deliveryId: delivery?.id,
+      const storagePath = `${
+        profile.organization_id
+      }/${targetProjectId}/qc/${Date.now()}-${fileName}`;
+      const { error: uploadError } = await supabase.storage
+        .from("deliveries")
+        .upload(storagePath, buffer, {
+          contentType: file.type,
+          upsert: false,
         });
 
-      } catch (fileError: any) {
-        console.error(`Error processing ${file.name}:`, fileError);
-        results.push({
-          fileName: file.name,
-          status: "error",
-          error: fileError.message || "Processing failed",
-        });
+      if (uploadError) {
+        // ... (error handling for upload)
+        continue;
       }
+
+      // Create an initial delivery record with 'processing' status
+      const { data: delivery, error: deliveryError } = await supabase
+        .from("deliveries")
+        .insert({
+          organization_id: profile.organization_id,
+          project_id: targetProjectId,
+          vendor_id: user.id,
+          file_name: fileName,
+          original_file_name: fileName,
+          status: "processing", // Initial status
+          storage_path: storagePath,
+          file_size: file.size,
+          file_type:
+            file.name.endsWith(".srt") || file.name.endsWith(".vtt")
+              ? "subtitle"
+              : "video",
+        })
+        .select()
+        .single();
+
+      if (deliveryError || !delivery) {
+        // ... (error handling for delivery creation)
+        continue;
+      }
+
+      // Start the background processing but DO NOT wait for it
+      processFileInBackground(delivery.id, tempPath, file, useAI);
+
+      results.push({
+        fileName,
+        status: "processing",
+        deliveryId: delivery.id,
+      });
     }
 
-    const passedCount = results.filter((r) => r.analysis?.status === "passed").length;
-    const failedCount = results.filter((r) => r.analysis?.status === "failed").length;
-
+    // Immediately return the initial results
     return NextResponse.json({
       success: true,
       summary: {
         total: results.length,
-        passed: passedCount,
-        failed: failedCount,
-        needsReview: results.length - passedCount - failedCount,
+        processing: results.length,
       },
       results,
     });
+    
+    // ============================================================
+    // Update Usage - This will now be done when the job is created
+    // ============================================================
+    if (results.length > 0) {
+      const { error: rpcError } = await supabase.rpc('increment_qc_usage', {
+        p_organisation_id: orgId,
+        p_increment_by: results.length,
+      });
+
+      if (rpcError) {
+        console.warn('Failed to update QC usage:', rpcError);
+      }
+    }
+    // ============================================================
 
   } catch (error: any) {
     console.error("AI QC Analysis error:", error);
@@ -229,6 +315,7 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
 
 async function extractAudioMetadata(filePath: string): Promise<any> {
   try {

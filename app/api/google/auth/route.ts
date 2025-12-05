@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient as createAdminClient } from "@supabase/supabase-js";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 
+// Uses cookies and external network calls and must run dynamically.
+export const dynamic = "force-dynamic";
+
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 const REDIRECT_URI = `${APP_URL}/api/google/callback`;
 
@@ -18,6 +21,7 @@ function getAdminClient() {
 const SCOPES = [
   "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/drive.readonly",
+  "https://www.googleapis.com/auth/spreadsheets",
   "https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
 

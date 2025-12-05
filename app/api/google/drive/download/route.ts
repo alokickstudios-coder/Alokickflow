@@ -70,6 +70,7 @@ export async function GET(request: NextRequest) {
         "Content-Type": metadata.mimeType,
         "Content-Disposition": `attachment; filename="${metadata.name}"`,
         "Content-Length": metadata.size,
+        "X-File-Name": encodeURIComponent(metadata.name),
       },
     });
   } catch (error: any) {
