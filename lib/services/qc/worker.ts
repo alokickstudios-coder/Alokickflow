@@ -9,15 +9,16 @@
  * NO environment-specific logic here - pure business logic.
  */
 
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 import { runQcForJob, QcJobContext } from "./engine";
 import { getEnabledQCFeatures } from "./engine";
 import { logQCEvent } from "@/lib/utils/qc-logger";
+import { decrypt } from "@/lib/utils/crypto";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-function getAdminClient(): SupabaseClient | null {
+function getAdminClient() {
   if (!supabaseUrl || !supabaseServiceKey) return null;
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
@@ -41,66 +42,151 @@ export interface QcJobRow {
   updated_at: string;
 }
 
-async function processJob(job: QcJobRow, adminClient: SupabaseClient): Promise<QcJobRow> {
-    console.log(`[QCWorker] Processing job ${job.id} for org ${job.organisation_id}`);
-    logQCEvent.qcStarted(job.id, job.organisation_id, job.project_id || "");
+/**
+ * Process a single QC job from the queue
+ * 
+ * @returns The processed job or null if no job was available
+ */
+export async function processNextQcJob(): Promise<QcJobRow | null> {
+  const adminClient = getAdminClient();
+  if (!adminClient) {
+    throw new Error("Admin client not available - check SUPABASE_SERVICE_ROLE_KEY");
+  }
 
-    try {
-        // Get enabled features for this organization
-        const featuresEnabled = await getEnabledQCFeatures(job.organisation_id);
+  // Select oldest queued job
+  const { data: jobs, error: selectError } = await adminClient
+    .from("qc_jobs")
+    .select("*")
+    .in("status", ["queued", "pending"])
+    .order("created_at", { ascending: true })
+    .limit(1);
 
-        // Resolve file based on source_type
-        const context = await resolveFileContext(job, adminClient);
+  if (selectError) {
+    console.error("[QCWorker] Error selecting job:", selectError);
+    throw selectError;
+  }
 
-        // Run QC engine
-        const qcResult = await runQcForJob(job, context, featuresEnabled);
+  if (!jobs || jobs.length === 0) {
+    return null; // No jobs available
+  }
 
-        // Update job with results
-        const { error: resultError } = await adminClient
-            .from("qc_jobs")
-            .update({
-                status: "completed",
-                result_json: qcResult,
-                completed_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-            })
-            .eq("id", job.id);
+  const job: QcJobRow = jobs[0] as QcJobRow;
+  console.log(`[QCWorker] Processing job ${job.id} for org ${job.organisation_id}`);
 
-        if (resultError) {
-            console.error(`[QCWorker] Error updating job ${job.id} with results:`, resultError);
-            throw resultError;
-        }
+  // Check if job was cancelled before we start
+  const { data: currentJob, error: checkError } = await adminClient
+    .from("qc_jobs")
+    .select("status")
+    .eq("id", job.id)
+    .single();
 
-        // Update delivery record if linked
-        if (job.delivery_id) {
-            await updateDeliveryRecord(job.delivery_id, qcResult, adminClient);
-        }
+  if (checkError) {
+    console.error(`[QCWorker] Error checking job ${job.id} status:`, checkError);
+    throw checkError;
+  }
 
-        logQCEvent.qcCompleted(job.id, qcResult.status === "passed" ? "passed" : "failed", qcResult.score, job.organisation_id);
+  if (currentJob?.status === "cancelled") {
+    console.log(`[QCWorker] Job ${job.id} was cancelled, skipping`);
+    return null; // Skip cancelled job
+  }
 
-        console.log(`[QCWorker] Successfully completed job ${job.id}`);
-        return { ...job, status: "completed", result_json: qcResult };
-    } catch (error: any) {
-        console.error(`[QCWorker] Error processing job ${job.id}:`, error);
+  // Mark as running
+  const { error: updateError } = await adminClient
+    .from("qc_jobs")
+    .update({
+      status: "running",
+      started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
 
-        // Mark job as failed
-        await adminClient
-            .from("qc_jobs")
-            .update({
-                status: "failed",
-                error_message: error.message || "Unknown error",
-                completed_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-            })
-            .eq("id", job.id);
+  if (updateError) {
+    console.error(`[QCWorker] Error marking job ${job.id} as running:`, updateError);
+    throw updateError;
+  }
 
-        logQCEvent.qcFailed(job.id, error.message, job.organisation_id);
+  logQCEvent.qcStarted(job.id, job.organisation_id, job.project_id || "");
 
+  try {
+    // Check again if job was cancelled after marking as running
+    const { data: runningJob, error: runningCheckError } = await adminClient
+      .from("qc_jobs")
+      .select("status")
+      .eq("id", job.id)
+      .single();
 
-        return { ...job, status: "failed", error_message: error.message || "Unknown error" };
+    if (runningCheckError) {
+      console.warn(`[QCWorker] Could not check cancellation status for job ${job.id}`);
+    } else if (runningJob?.status === "cancelled") {
+      console.log(`[QCWorker] Job ${job.id} was cancelled, aborting`);
+      return null; // Abort cancelled job
     }
-}
 
+    // Get enabled features for this organization
+    const featuresEnabled = await getEnabledQCFeatures(job.organisation_id);
+
+    // Resolve file based on source_type
+    const context = await resolveFileContext(job, adminClient);
+
+    // Run QC engine
+    const qcResult = await runQcForJob(job, context, featuresEnabled);
+
+    // Update job with results
+    const { error: resultError } = await adminClient
+      .from("qc_jobs")
+      .update({
+        status: "completed",
+        result_json: qcResult,
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", job.id);
+
+    if (resultError) {
+      console.error(`[QCWorker] Error updating job ${job.id} with results:`, resultError);
+      throw resultError;
+    }
+
+    // Update delivery record if linked
+    if (job.delivery_id) {
+      await updateDeliveryRecord(job.delivery_id, qcResult, adminClient);
+    }
+
+    logQCEvent.qcCompleted(job.id, qcResult.status === "passed" ? "passed" : "failed", qcResult.score, job.organisation_id);
+
+    console.log(`[QCWorker] Successfully completed job ${job.id}`);
+    return { ...job, status: "completed", result_json: qcResult };
+  } catch (error: any) {
+    // Check if job was cancelled (don't mark as failed if cancelled)
+    const { data: cancelledCheck, error: cancelledCheckError } = await adminClient
+      .from("qc_jobs")
+      .select("status")
+      .eq("id", job.id)
+      .single();
+
+    if (!cancelledCheckError && cancelledCheck?.status === "cancelled") {
+      console.log(`[QCWorker] Job ${job.id} was cancelled during processing`);
+      return null; // Don't mark as failed if cancelled
+    }
+
+    console.error(`[QCWorker] Error processing job ${job.id}:`, error);
+
+    // Mark job as failed (only if not cancelled)
+    await adminClient
+      .from("qc_jobs")
+      .update({
+        status: "failed",
+        error_message: error.message || "Unknown error",
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", job.id);
+
+    logQCEvent.qcFailed(job.id, error, job.organisation_id);
+
+    return { ...job, status: "failed", error_message: error.message || "Unknown error" };
+  }
+}
 
 /**
  * Process a batch of QC jobs
@@ -109,28 +195,27 @@ async function processJob(job: QcJobRow, adminClient: SupabaseClient): Promise<Q
  * @returns Summary of processed jobs
  */
 export async function processBatch(limit: number = 5): Promise<{ processed: number; errors: number }> {
-    const adminClient = getAdminClient();
-    if (!adminClient) {
-        throw new Error("Admin client not available - check SUPABASE_SERVICE_ROLE_KEY");
+  let processed = 0;
+  let errors = 0;
+
+  for (let i = 0; i < limit; i++) {
+    try {
+      const job = await processNextQcJob();
+      if (!job) {
+        break; // No more jobs
+      }
+      processed++;
+      if (job.status === "failed") {
+        errors++;
+      }
+    } catch (error: any) {
+      console.error(`[QCWorker] Error in batch processing:`, error);
+      errors++;
+      // Continue with next job
     }
+  }
 
-    const { data: jobs, error: selectError } = await adminClient.rpc('select_and_mark_qc_jobs', { batch_size: limit });
-
-    if (selectError) {
-        console.error("[QCWorker] Error selecting jobs:", selectError);
-        throw selectError;
-    }
-
-    if (!jobs || jobs.length === 0) {
-        return { processed: 0, errors: 0 }; // No jobs available
-    }
-
-    const results = await Promise.all(jobs.map(job => processJob(job as QcJobRow, adminClient)));
-
-    const processed = results.length;
-    const errors = results.filter(r => r.status === 'failed').length;
-
-    return { processed, errors };
+  return { processed, errors };
 }
 
 /**
@@ -138,7 +223,7 @@ export async function processBatch(limit: number = 5): Promise<{ processed: numb
  */
 async function resolveFileContext(
   job: QcJobRow,
-  adminClient: SupabaseClient
+  adminClient: ReturnType<typeof getAdminClient>
 ): Promise<QcJobContext> {
   if (!job.source_path) {
     throw new Error("Job missing source_path");
@@ -160,7 +245,7 @@ async function resolveFileContext(
  */
 async function resolveDriveFile(
   driveFileId: string,
-  adminClient: SupabaseClient,
+  adminClient: ReturnType<typeof getAdminClient>,
   job?: QcJobRow
 ): Promise<QcJobContext> {
   console.log(`[QCWorker] Resolving Drive file ${driveFileId} for job ${job?.id}`);
@@ -240,47 +325,38 @@ async function resolveDriveFile(
         console.warn(`[QCWorker] Error fetching user token:`, tokenError);
       }
       
-      const { decrypt, encrypt } = await import("@/lib/utils/crypto");
-
       if (userTokens?.access_token) {
-        try {
-            const decryptedAccessToken = userTokens.access_token.includes(':') ? await decrypt(userTokens.access_token) : userTokens.access_token;
-            // Check if token is expired
-            const expiresAt = userTokens.expires_at ? new Date(userTokens.expires_at) : null;
-            if (!expiresAt || expiresAt > new Date()) {
-              console.log(`[QCWorker] Found valid access token for user ${delivery.vendor_id}`);
-              accessToken = decryptedAccessToken;
-            } else {
-              console.log(`[QCWorker] Token expired for user ${delivery.vendor_id}, attempting refresh`);
-            }
-        } catch (e) {
-            console.error("Failed to decrypt access token", e);
+        // Check if token is expired
+        const expiresAt = userTokens.expires_at ? new Date(userTokens.expires_at) : null;
+        if (!expiresAt || expiresAt > new Date()) {
+          console.log(`[QCWorker] Found valid access token for user ${delivery.vendor_id}`);
+          accessToken = userTokens.access_token;
+        } else {
+          console.log(`[QCWorker] Token expired for user ${delivery.vendor_id}, attempting refresh`);
         }
       }
       
       // Try to refresh if expired or missing
       if (!accessToken && userTokens?.refresh_token) {
         try {
-            const decryptedRefreshToken = userTokens.refresh_token.includes(':') ? await decrypt(userTokens.refresh_token) : userTokens.refresh_token;
-            console.log(`[QCWorker] Refreshing token for user ${delivery.vendor_id}`);
-            const { refreshAccessToken } = await import("@/lib/google-drive/client");
-            const refreshed = await refreshAccessToken(decryptedRefreshToken);
-            accessToken = refreshed.access_token;
+          console.log(`[QCWorker] Refreshing token for user ${delivery.vendor_id}`);
+          const { refreshAccessToken } = await import("@/lib/google-drive/client");
+          const refreshed = await refreshAccessToken(userTokens.refresh_token);
+          accessToken = refreshed.access_token;
           
-            const encryptedAccessToken = await encrypt(refreshed.access_token);
-            // Update token in DB
-            const updateQuery = userTokens.user_id
-                ? adminClient!.from("google_tokens").update({
-                    access_token: encryptedAccessToken,
-                    expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
-                }).eq("user_id", delivery.vendor_id)
-                : adminClient!.from("google_tokens").update({
-                    access_token: encryptedAccessToken,
-                    expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
-                }).eq("id", userTokens.id || "default");
+          // Update token in DB
+          const updateQuery = userTokens.user_id
+            ? adminClient!.from("google_tokens").update({
+                access_token: refreshed.access_token,
+                expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
+              }).eq("user_id", delivery.vendor_id)
+            : adminClient!.from("google_tokens").update({
+                access_token: refreshed.access_token,
+                expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
+              }).eq("id", userTokens.id || "default");
 
-            await updateQuery;
-            console.log(`[QCWorker] Token refreshed and saved`);
+          await updateQuery;
+          console.log(`[QCWorker] Token refreshed and saved`);
         } catch (refreshError) {
           console.warn("[QCWorker] Failed to refresh token:", refreshError);
         }
@@ -310,38 +386,29 @@ async function resolveDriveFile(
       }
       
       if (defaultToken?.access_token) {
-        try {
-            const decryptedAccessToken = defaultToken.access_token.includes(':') ? await decrypt(defaultToken.access_token) : defaultToken.access_token;
-            const expiresAt = defaultToken.expires_at ? new Date(defaultToken.expires_at) : null;
-            if (!expiresAt || expiresAt > new Date()) {
-              console.log(`[QCWorker] Found valid default token`);
-              accessToken = decryptedAccessToken;
-            } else if (defaultToken.refresh_token) {
-              // Try to refresh default token
-              try {
-                const decryptedRefreshToken = defaultToken.refresh_token.includes(':') ? await decrypt(defaultToken.refresh_token) : defaultToken.refresh_token;
-                console.log(`[QCWorker] Refreshing default token`);
-                const { refreshAccessToken } = await import("@/lib/google-drive/client");
-                const refreshed = await refreshAccessToken(decryptedRefreshToken);
-                accessToken = refreshed.access_token;
-                
-                const { encrypt } = await import('@/lib/utils/crypto');
-                const encryptedAccessToken = await encrypt(refreshed.access_token);
-
-                // Update in DB
-                await adminClient!
-                  .from("google_tokens")
-                  .update({
-                    access_token: encryptedAccessToken,
-                    expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
-                  })
-                  .eq("id", "default");
-              } catch (refreshError) {
-                console.warn("[QCWorker] Failed to refresh default token:", refreshError);
-              }
-            }
-        } catch (e) {
-            console.error("Failed to decrypt access token", e);
+        const expiresAt = defaultToken.expires_at ? new Date(defaultToken.expires_at) : null;
+        if (!expiresAt || expiresAt > new Date()) {
+          console.log(`[QCWorker] Found valid default token`);
+          accessToken = defaultToken.access_token;
+        } else if (defaultToken.refresh_token) {
+          // Try to refresh default token
+          try {
+            console.log(`[QCWorker] Refreshing default token`);
+            const { refreshAccessToken } = await import("@/lib/google-drive/client");
+            const refreshed = await refreshAccessToken(defaultToken.refresh_token);
+            accessToken = refreshed.access_token;
+            
+            // Update in DB
+            await adminClient!
+              .from("google_tokens")
+              .update({
+                access_token: refreshed.access_token,
+                expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
+              })
+              .eq("id", "default");
+          } catch (refreshError) {
+            console.warn("[QCWorker] Failed to refresh default token:", refreshError);
+          }
         }
       }
       
@@ -359,20 +426,14 @@ async function resolveDriveFile(
         }
         
         if (orgTokens?.access_token) {
-            try {
-                const decryptedAccessToken = orgTokens.access_token.includes(':') ? await decrypt(orgTokens.access_token) : orgTokens.access_token;
-                console.log(`[QCWorker] Found valid fallback token`);
-                accessToken = decryptedAccessToken;
-            } catch (e) {
-                console.error("Failed to decrypt access token", e);
-            }
+          console.log(`[QCWorker] Found valid fallback token`);
+          accessToken = orgTokens.access_token;
         } else if (orgTokens?.refresh_token) {
           // Try to refresh any token
           try {
-            const decryptedRefreshToken = orgTokens.refresh_token.includes(':') ? await decrypt(orgTokens.refresh_token) : orgTokens.refresh_token;
             console.log(`[QCWorker] Refreshing any available token`);
             const { refreshAccessToken } = await import("@/lib/google-drive/client");
-            const refreshed = await refreshAccessToken(decryptedRefreshToken);
+            const refreshed = await refreshAccessToken(orgTokens.refresh_token);
             accessToken = refreshed.access_token;
           } catch (refreshError) {
             console.warn("[QCWorker] Failed to refresh any token:", refreshError);
@@ -453,7 +514,7 @@ async function resolveDriveFile(
  */
 async function resolveStorageFile(
   storagePath: string,
-  adminClient: SupabaseClient
+  adminClient: ReturnType<typeof getAdminClient>
 ): Promise<QcJobContext> {
   // Download from Supabase Storage
   const { data, error } = await adminClient!.storage
@@ -501,7 +562,7 @@ async function resolveStorageFile(
 async function updateDeliveryRecord(
   deliveryId: string,
   qcResult: any,
-  adminClient: SupabaseClient
+  adminClient: ReturnType<typeof getAdminClient>
 ) {
   const status = qcResult.status === "passed" ? "qc_passed" :
                  qcResult.status === "failed" ? "qc_failed" : "needs_review";

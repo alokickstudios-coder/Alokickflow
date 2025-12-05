@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-function getAdminClient() {
+function getAdminClient(): SupabaseClient | null {
   if (!supabaseUrl || !supabaseServiceKey) return null;
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
@@ -18,7 +19,7 @@ type Stage = (typeof DEFAULT_STAGES)[number];
 type StageStatus = (typeof ALLOWED_STATUS)[number];
 
 async function ensureDefaultStages(
-  supabase: ReturnType<typeof getAdminClient>,
+  supabase: SupabaseClient,
   organizationId: string
 ) {
   if (!supabase) return;
@@ -69,7 +70,7 @@ async function ensureDefaultStages(
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = getAdminClient();
+    const supabase: SupabaseClient | null = getAdminClient();
     if (!supabase) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
@@ -108,7 +109,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = getAdminClient();
+    const supabase: SupabaseClient | null = getAdminClient();
     if (!supabase) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
@@ -153,7 +154,7 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const supabase = getAdminClient();
+    const supabase: SupabaseClient | null = getAdminClient();
     if (!supabase) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }

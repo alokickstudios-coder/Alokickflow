@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import Stripe from "stripe";
+import { createClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
 /**
  * POST /api/billing/createPortalSession
  * 
- * Create Stripe customer portal session for managing subscription.
+ * Create Stripe customer portal session for managing subscription
+ * For now, returns a placeholder. Will integrate with Stripe when keys are added.
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createServerClient();
+    const supabase: SupabaseClient = await createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -41,26 +42,33 @@ export async function POST(request: NextRequest) {
       .eq("organisation_id", profile.organization_id)
       .single();
 
+    // For now, return a placeholder message
+    // When Stripe keys are added, integrate with Stripe billing portal
     if (!subscription?.external_customer_id) {
       return NextResponse.json(
         {
-          error: "Stripe customer not found. Please contact support.",
+          error: "Stripe integration not configured yet. Please contact support to manage your subscription.",
         },
         { status: 400 }
       );
     }
 
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-        apiVersion: "2024-06-20",
-    });
-
+    // TODO: When Stripe keys are added, uncomment this:
+    /*
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: subscription.external_customer_id,
       return_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings`,
     });
-    
     return NextResponse.json({ url: portalSession.url });
+    */
 
+    return NextResponse.json(
+      {
+        error: "Stripe integration not configured yet. Please contact support.",
+      },
+      { status: 400 }
+    );
   } catch (error: any) {
     console.error("Error creating portal session:", error);
     return NextResponse.json(
@@ -69,3 +77,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
