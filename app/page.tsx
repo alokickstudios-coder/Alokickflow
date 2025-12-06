@@ -4,6 +4,9 @@ import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, CheckCircle2, Play, Shield, Zap, FileVideo, Users, BarChart3 } from "lucide-react";
 
+
+// Mark as dynamic to prevent static generation issues with Supabase
+export const dynamic = 'force-dynamic';
 export default async function HomePage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
