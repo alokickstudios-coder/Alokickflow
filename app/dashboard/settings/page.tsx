@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Save, Building2, User, Bell, Shield, CreditCard, HardDrive, KeyRound } from "lucide-react";
