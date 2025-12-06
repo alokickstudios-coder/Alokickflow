@@ -43,5 +43,3 @@ WHERE table_name = 'qc_jobs'
   AND column_name IN ('source_type', 'source_path', 'file_name', 'result_json')
 ORDER BY column_name;
 
-
-

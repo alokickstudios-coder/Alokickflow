@@ -12,6 +12,13 @@ import {
   Link as LinkIcon,
   CheckCircle2,
   AlertCircle,
+  Pause,
+  Play,
+  ExternalLink,
+  Download,
+  MoreVertical,
+  Trash2,
+  Eye,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,13 +27,19 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { supabase } from "@/lib/supabase/client";
-import { RealtimeChannel } from "@supabase/supabase-js";
 
 interface FileWithProgress extends File {
   preview?: string;
   progress?: number;
-  status?: "pending" | "uploading" | "queued" | "processing" | "analyzing" | "complete" | "needs_review" | "error";
+  status?: "pending" | "uploading" | "queued" | "processing" | "analyzing" | "complete" | "needs_review" | "error" | "paused";
   result?: any;
   summary?: any;
   id?: string;
@@ -34,6 +47,8 @@ interface FileWithProgress extends File {
   jobId?: string; // QC job ID (preferred)
   error?: string; // Error message if failed
   driveLink?: string; // Google Drive link if from Drive
+  driveFileId?: string; // Google Drive file ID for direct access
+  storagePath?: string; // Supabase storage path for downloads
 }
 
 interface BulkUploadProps {
@@ -51,17 +66,6 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
   const [processingDriveUrl, setProcessingDriveUrl] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
-  const channels = useRef<RealtimeChannel[]>([]);
-
-  useEffect(() => {
-    // Cleanup supabase channels on unmount
-    return () => {
-      channels.current.forEach(channel => {
-        supabase.removeChannel(channel);
-      });
-    };
-  }, []);
-
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -189,20 +193,17 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
       let fileSize = 0;
       
       try {
-        const cookieStore = await import("next/headers").then(m => m.cookies());
-        let accessToken = cookieStore.get("google_access_token")?.value;
-
-        if (!accessToken) {
-          // Try fetching from API
-          const tokenResponse = await fetch("/api/google/auth");
-          if (tokenResponse.ok) {
-            const tokenData = await tokenResponse.json();
-            accessToken = tokenData.accessToken;
-          }
+        // Fetch access token from our API endpoint (client-safe)
+        const tokenResponse = await fetch("/api/google/auth");
+        let accessToken: string | null = null;
+        
+        if (tokenResponse.ok) {
+          const tokenData = await tokenResponse.json();
+          accessToken = tokenData.accessToken;
         }
 
         if (accessToken) {
-          // Fetch file metadata (optional - for better UX)
+          // Fetch file metadata from Google Drive API
           const metaResponse = await fetch(
             `https://www.googleapis.com/drive/v3/files/${fileId}?fields=name,mimeType,size`,
             {
@@ -271,6 +272,12 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
         enumerable: true,
         configurable: true,
       });
+      Object.defineProperty(fileWithProgress, 'driveFileId', {
+        value: fileId, // Store the extracted file ID for direct access
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
 
       setFiles((prev) => [...prev, fileWithProgress]);
 
@@ -291,8 +298,241 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
     }
   };
 
-  const removeFile = (id: string) => {
+  const removeFile = async (id: string) => {
+    const file = files.find((f) => f.id === id);
+    
+    if (!file) {
+      return;
+    }
+
+    // If file has a job ID and is queued/running/analyzing, cancel it first
+    if (file.jobId && (file.status === "queued" || file.status === "processing" || file.status === "analyzing" || file.status === "uploading")) {
+      try {
+        const response = await fetch("/api/qc/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobIds: [file.jobId] }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          toast({
+            title: "Job cancelled",
+            description: `${file.name} processing has been cancelled.`,
+            variant: "default",
+          });
+        } else {
+          const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+          console.warn("[BulkQCUpload] Failed to cancel job:", errorData);
+          // Still remove from UI even if cancel fails
+        }
+      } catch (error) {
+        console.error("[BulkQCUpload] Error cancelling job:", error);
+        // Continue to remove from UI even if cancel fails
+      }
+    }
+
+    // Remove from UI immediately
     setFiles((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  const cancelAllFiles = async () => {
+    const filesToCancel = files.filter(
+      (f) => f.jobId && (f.status === "queued" || f.status === "processing" || f.status === "analyzing")
+    );
+
+    if (filesToCancel.length === 0) {
+      // No active jobs, just clear all files
+      setFiles([]);
+      return;
+    }
+
+    try {
+      const jobIds = filesToCancel.map((f) => f.jobId!).filter(Boolean);
+      const response = await fetch("/api/qc/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobIds }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: "All jobs cancelled",
+          description: `${jobIds.length} processing job(s) have been cancelled.`,
+          variant: "default",
+        });
+      } else {
+        const errorData = await response.json();
+        toast({
+          title: "Cancellation failed",
+          description: errorData.error || "Failed to cancel some jobs",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("[BulkQCUpload] Error cancelling all jobs:", error);
+      toast({
+        title: "Error",
+        description: "Failed to cancel jobs",
+        variant: "destructive",
+      });
+    }
+
+    // Clear all files from UI
+    setFiles([]);
+  };
+
+  // Pause a job (mark as paused in UI, cancel on backend)
+  const pauseFile = async (id: string) => {
+    const file = files.find((f) => f.id === id);
+    if (!file) return;
+
+    // If job is queued or processing, cancel it on the backend
+    if (file.jobId && (file.status === "queued" || file.status === "processing" || file.status === "analyzing")) {
+      try {
+        await fetch("/api/qc/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobIds: [file.jobId] }),
+        });
+      } catch (error) {
+        console.error("[BulkQCUpload] Error pausing job:", error);
+      }
+    }
+
+    // Mark as paused in UI
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.id === id ? { ...f, status: "paused" as const } : f
+      )
+    );
+
+    toast({
+      title: "Job paused",
+      description: `${file.name} has been paused.`,
+      variant: "default",
+    });
+  };
+
+  // Resume a paused job (re-queue it)
+  const resumeFile = async (id: string) => {
+    const file = files.find((f) => f.id === id);
+    if (!file || file.status !== "paused") return;
+
+    // Mark as pending to re-queue
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.id === id ? { ...f, status: "pending" as const, jobId: undefined, deliveryId: undefined } : f
+      )
+    );
+
+    toast({
+      title: "Job resumed",
+      description: `${file.name} has been queued for processing. Click "Start QC Analysis" to begin.`,
+      variant: "default",
+    });
+  };
+
+  // Open file in Google Drive
+  const openInDrive = (file: FileWithProgress) => {
+    if (file.driveLink) {
+      window.open(file.driveLink, "_blank");
+    } else if (file.driveFileId) {
+      window.open(`https://drive.google.com/file/d/${file.driveFileId}/view`, "_blank");
+    } else {
+      toast({
+        title: "Cannot open in Drive",
+        description: "This file is not from Google Drive.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Download file (from Supabase Storage or Google Drive)
+  const downloadFile = async (file: FileWithProgress) => {
+    try {
+      if (file.driveLink || file.driveFileId) {
+        // For Google Drive files, open the download link
+        const fileId = file.driveFileId || extractDriveFileId(file.driveLink || "");
+        if (fileId) {
+          // Try to get direct download link
+          window.open(`https://drive.google.com/uc?export=download&id=${fileId}`, "_blank");
+        } else {
+          toast({
+            title: "Download failed",
+            description: "Could not extract file ID from Drive link.",
+            variant: "destructive",
+          });
+        }
+      } else if (file.storagePath) {
+        // For Supabase Storage files
+        const { data, error } = await supabase.storage
+          .from("deliveries")
+          .createSignedUrl(file.storagePath, 3600); // 1 hour expiry
+
+        if (error) throw error;
+        if (data?.signedUrl) {
+          // Create a download link
+          const a = document.createElement("a");
+          a.href = data.signedUrl;
+          a.download = file.name || "download";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }
+      } else {
+        // For local files that haven't been uploaded yet
+        if (file.size > 0) {
+          const url = URL.createObjectURL(file);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = file.name || "download";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        } else {
+          toast({
+            title: "Download not available",
+            description: "This file cannot be downloaded.",
+            variant: "destructive",
+          });
+        }
+      }
+    } catch (error: any) {
+      console.error("[BulkQCUpload] Download error:", error);
+      toast({
+        title: "Download failed",
+        description: error.message || "Failed to download file.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Extract Drive file ID from URL
+  const extractDriveFileId = (url: string): string | null => {
+    const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/) || 
+                  url.match(/id=([a-zA-Z0-9_-]+)/) ||
+                  url.match(/([a-zA-Z0-9_-]{25,})/);
+    return match ? match[1] : null;
+  };
+
+  // View QC results for a completed file
+  const viewResults = (file: FileWithProgress) => {
+    if (file.result || file.summary) {
+      // Show results in a modal or navigate to results page
+      toast({
+        title: "QC Results",
+        description: `Score: ${file.summary?.score || 0}/100. ${file.summary?.passed ? "Passed" : "Needs Review"}`,
+        variant: file.summary?.passed ? "success" : "default",
+      });
+    } else {
+      toast({
+        title: "No results",
+        description: "QC results are not available yet.",
+        variant: "default",
+      });
+    }
   };
 
   const handleUpload = async () => {
@@ -309,7 +549,7 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
     setOverallProgress(5); // Initial progress
 
     const filesToUpload = files.filter(
-      (f) => f.status === "pending"
+      (f) => f.status === "pending" || f.status === "paused"
     );
 
     // Separate Drive links from file uploads
@@ -398,9 +638,10 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
                 f.name?.toLowerCase() === job.fileName?.toLowerCase()
               );
               if (fileIndex !== -1) {
-                newFiles[fileIndex].status = "queued";
-                newFiles[fileIndex].deliveryId = job.id;
-                newFiles[fileIndex].progress = 10;
+              newFiles[fileIndex].status = "queued";
+              newFiles[fileIndex].jobId = job.id; // Store job ID for cancellation
+              newFiles[fileIndex].deliveryId = job.id; // Also store in deliveryId for compatibility
+              newFiles[fileIndex].progress = 10;
               }
             });
           }
@@ -425,13 +666,13 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
 
         setOverallProgress(10);
         
+        // Start polling for job status
         const jobIds = data.jobs.map((j: any) => j.id);
         if (jobIds.length > 0) {
-          listenToJobUpdates(jobIds);
+          startPollingJobStatus(jobIds);
         } else {
           setUploading(false);
         }
-
 
         return; // Exit early - Drive links processed, no upload needed
       }
@@ -541,10 +782,12 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
 
       setOverallProgress(10);
       
+      // Start polling for job status
       const jobIds = data.jobs.map((j: any) => j.id);
       if (jobIds.length > 0) {
-        listenToJobUpdates(jobIds);
+        startPollingJobStatus(jobIds);
       } else {
+        // No jobs created, stop uploading state
         setUploading(false);
       }
 
@@ -563,74 +806,219 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
     }
   };
 
-  const listenToJobUpdates = (jobIds: string[]) => {
-    const channel = supabase
-      .channel(`qc-jobs-bulk-upload`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'qc_jobs',
-          filter: `id=in.(${jobIds.join(',')})`,
-        },
-        (payload) => {
-          const updatedJob = payload.new as any;
-          setFiles((prevFiles) => {
-            const newFiles = [...prevFiles];
-            const fileIndex = newFiles.findIndex((f) => f.deliveryId === updatedJob.id);
-            if (fileIndex !== -1) {
-              const file = newFiles[fileIndex];
-              let newStatus: typeof file.status = file.status;
-              let newProgress = file.progress || 0;
+  // Poll job status from qc_jobs table
+  const startPollingJobStatus = (jobIds: string[]) => {
+    let intervalId: NodeJS.Timeout;
+    let pollCount = 0;
+    const maxPolls = 300; // 10 minutes max (300 * 2s)
 
-              if (updatedJob.status === "running") {
-                newStatus = "processing";
-                newProgress = Math.min((file.progress || 10) + 2, 95);
-              } else if (updatedJob.status === "completed") {
-                const hasResult = updatedJob.result_json && Object.keys(updatedJob.result_json).length > 0;
-                if (hasResult) {
-                  const qcStatus = updatedJob.result_json.overall_status || "needs_review";
-                  newStatus = qcStatus === "passed" ? "complete" : qcStatus === "failed" ? "error" : "needs_review";
-                } else {
-                  newStatus = "processing";
-                  newProgress = 95;
-                }
-                newProgress = 100;
-                if (updatedJob.result_json) {
-                  (file as any).result = updatedJob.result_json;
-                }
-                if (updatedJob.summary) {
-                    (file as any).summary = updatedJob.summary;
-                }
-              } else if (updatedJob.status === "failed") {
-                newStatus = "error";
-                newProgress = 0;
-              }
-              newFiles[fileIndex] = { ...file, status: newStatus, progress: newProgress, error: updatedJob.error_message || file.error };
-            }
-
-            const allComplete = newFiles.every(f => f.status === 'complete' || f.status === 'error');
-            if (allComplete) {
-                setUploading(false);
-                onUploadComplete?.();
-                supabase.removeChannel(channel);
-            }
-
-            const completedCount = newFiles.filter(f => f.status === 'complete' || f.status === 'error').length;
-            const progress = 10 + Math.floor((completedCount / newFiles.length) * 90);
-            setOverallProgress(progress);
-
-
-            return newFiles;
-          });
+    const poll = async () => {
+      pollCount++;
+      
+      try {
+        const jobIdsParam = jobIds.join(",");
+        const response = await fetch(`/api/qc/job-status?jobIds=${jobIdsParam}`);
+        
+        if (!response.ok) {
+          console.error("[BulkQCUpload] Polling error:", response.statusText);
+          return;
         }
-      )
-      .subscribe();
 
-    channels.current.push(channel);
+        const data = await response.json();
+        if (!data.success || !data.jobs) {
+          return;
+        }
+
+        // Update files based on job status
+        setFiles((prev) => {
+          return prev.map((f) => {
+            // Try to find job by jobId first, then deliveryId
+            const job = data.jobs.find((j: any) => j.id === f.jobId || j.id === f.deliveryId);
+            if (!job) {
+              return f; // Job not found yet, keep current state
+            }
+            
+            // Update jobId if we found it via deliveryId
+            if (!f.jobId && job.id) {
+              (f as any).jobId = job.id;
+            }
+
+            let newStatus: typeof f.status = f.status;
+            let newProgress = f.progress || 0;
+
+            if (job.status === "queued") {
+              newStatus = "queued";
+              // Progress slowly increases while queued (5-15%)
+              newProgress = Math.min((f.progress || 5) + 1, 15);
+            } else if (job.status === "running") {
+              newStatus = "processing";
+              // More realistic progress simulation (15-95%)
+              // Use job.progress if available from backend, otherwise simulate
+              if (job.progress !== undefined) {
+                newProgress = Math.max(15, Math.min(job.progress, 95));
+              } else {
+                // Simulate progress based on poll count - increases faster at start, slower towards end
+                const currentProgress = f.progress || 15;
+                const increment = currentProgress < 50 ? 5 : currentProgress < 80 ? 3 : 1;
+                newProgress = Math.min(currentProgress + increment, 95);
+              }
+            } else if (job.status === "analyzing") {
+              newStatus = "analyzing";
+              // AI Analysis phase (70-95%)
+              const currentProgress = f.progress || 70;
+              newProgress = Math.min(currentProgress + 2, 95);
+            } else if (job.status === "completed") {
+              // Job completed - check QC result
+              const hasResult = job.result && Object.keys(job.result).length > 0;
+              if (hasResult) {
+                // QC analysis completed, determine final status
+                const qcStatus = job.summary?.status || "needs_review";
+                newStatus = qcStatus === "passed" ? "complete" : 
+                           qcStatus === "failed" ? "error" : "needs_review";
+              } else {
+                // Job completed but no result yet (shouldn't happen, but handle gracefully)
+                newStatus = "processing";
+                newProgress = 95;
+              }
+              newProgress = 100;
+              // Store result for display
+              if (job.result) {
+                (f as any).result = job.result;
+              }
+              if (job.summary) {
+                (f as any).summary = job.summary;
+              }
+            } else if (job.status === "failed") {
+              newStatus = "error";
+              newProgress = 0;
+            } else if (job.status === "cancelled") {
+              // Job was cancelled - remove from UI immediately
+              return null; // This will filter out the file
+            }
+
+            return {
+              ...f,
+              status: newStatus,
+              progress: newProgress,
+              error: job.error || f.error,
+            };
+          }).filter((f): f is FileWithProgress => f !== null); // Remove cancelled files
+        });
+
+        // Check if all jobs are complete
+        const allComplete = data.jobs.every((j: any) => 
+          j.status === "completed" || j.status === "failed"
+        );
+
+        if (allComplete) {
+          clearInterval(intervalId);
+          setOverallProgress(100);
+          setUploading(false);
+          
+          const completedCount = data.jobs.filter((j: any) => j.status === "completed").length;
+          const failedCount = data.jobs.filter((j: any) => j.status === "failed").length;
+          
+          toast({
+            title: "QC Complete",
+            description: `${completedCount} of ${data.jobs.length} file(s) processed successfully.${failedCount > 0 ? ` ${failedCount} failed.` : ""}`,
+            variant: completedCount === data.jobs.length ? "success" : "default",
+          });
+          
+          onUploadComplete?.();
+        } else {
+          // Update overall progress based on job statuses
+          const completedCount = data.jobs.filter((j: any) => 
+            j.status === "completed" || j.status === "failed"
+          ).length;
+          const progress = 10 + Math.floor((completedCount / data.jobs.length) * 90);
+          setOverallProgress(progress);
+        }
+      } catch (error) {
+        console.error("[BulkQCUpload] Polling error:", error);
+      }
+
+      // Stop after max polls
+      if (pollCount >= maxPolls) {
+        clearInterval(intervalId);
+        setUploading(false);
+        console.log("[BulkQCUpload] Max polls reached");
+      }
+    };
+
+    // Start polling immediately, then every 2 seconds
+    poll();
+    intervalId = setInterval(poll, 2000);
+
+    // Store interval ID for cleanup (component will handle cleanup on unmount)
   };
 
+  const startPollingForResults = (processingFiles: FileWithProgress[]) => {
+    let intervalId: NodeJS.Timeout;
+    let pollCount = 0;
+    const maxPolls = 600; // 20 minutes max polling time (600 * 2s)
+
+    const poll = async () => {
+      pollCount++;
+      let stillProcessingCount = 0;
+
+      const updatedFiles = await Promise.all(
+        files.map(async (file) => {
+          if (file.status !== "processing" || !file.deliveryId) {
+            if(file.status === "processing"){
+              stillProcessingCount++;
+            }
+            return file;
+          }
+
+          try {
+            const res = await fetch(`/api/qc/ai-analyze?deliveryId=${file.deliveryId}`);
+            if (!res.ok) {
+              // Don't mark as error immediately, could be a temp server issue
+              stillProcessingCount++;
+              return file;
+            }
+
+            const data = await res.json();
+            
+            if (data.status === "qc_passed" || data.status === "qc_failed" || data.status === "needs_review") {
+              return {
+                ...file,
+                status: data.status === "qc_passed" ? "complete" : "error",
+                progress: 100,
+                result: data.qcReport,
+                error: data.status !== "qc_passed" ? (data.qcReport?.summary || "QC failed") : undefined
+              };
+            } else {
+              // Still processing
+              stillProcessingCount++;
+              return { ...file, progress: Math.min((file.progress || 20) + 2, 95) };
+            }
+          } catch (e) {
+            stillProcessingCount++;
+            return file; // Keep original file state on fetch error
+          }
+        })
+      );
+      
+      setFiles(updatedFiles as FileWithProgress[]);
+      
+      const completedCount = updatedFiles.length - stillProcessingCount;
+      const progress = 20 + Math.floor((completedCount / updatedFiles.length) * 80);
+      setOverallProgress(progress);
+
+      if (stillProcessingCount === 0 || pollCount >= maxPolls) {
+        setUploading(false);
+        clearInterval(intervalId);
+        onUploadComplete?.();
+        toast({
+          title: "QC Process Finished",
+          description: `Analysis for all files has concluded.`
+        });
+      }
+    };
+
+    intervalId = setInterval(poll, 2000);
+  };
 
   const getFileIcon = (file: File | FileWithProgress) => {
     if (!file || !file.name) {
@@ -650,7 +1038,7 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
   };
 
-  const pendingFiles = files.filter((f) => f.status === "pending" || !f.status);
+  const pendingFiles = files.filter((f) => f.status === "pending" || f.status === "paused" || !f.status);
 
   return (
     <div className="space-y-6">
@@ -809,16 +1197,15 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
                     <h3 className="text-sm font-medium text-white">
                       {files.length} file{files.length > 1 ? "s" : ""} selected
                     </h3>
-                    {!uploading && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setFiles([])}
-                        className="text-zinc-400 hover:text-white h-8"
-                      >
-                        Clear All
-                      </Button>
-                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={cancelAllFiles}
+                      className="text-zinc-400 hover:text-white h-8"
+                      disabled={uploading && files.every(f => f.status === "complete" || f.status === "error" || f.status === "needs_review")}
+                    >
+                      {uploading ? "Cancel All" : "Clear All"}
+                    </Button>
                   </div>
                   <div className="space-y-2 max-h-[400px] overflow-y-auto">
                     {files
@@ -851,6 +1238,8 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
                                   <AlertCircle className="h-3 w-3 text-red-400" />
                                 ) : file.status === "needs_review" ? (
                                   <AlertCircle className="h-3 w-3 text-yellow-400" />
+                                ) : file.status === "paused" ? (
+                                  <Pause className="h-3 w-3 text-orange-400" />
                                 ) : (
                                   <Loader2 className="h-3 w-3 text-purple-400 animate-spin" />
                                 )}
@@ -863,6 +1252,8 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
                                       ? "text-red-400"
                                       : file.status === "needs_review"
                                       ? "text-yellow-400"
+                                      : file.status === "paused"
+                                      ? "text-orange-400"
                                       : "text-purple-400"
                                   )}
                                 >
@@ -875,11 +1266,13 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
                                     : file.status === "processing"
                                     ? "Processing..."
                                     : file.status === "complete"
-                                    ? "Complete ✓"
+                                    ? "Done ✓"
                                     : file.status === "needs_review"
                                     ? "Needs Review"
                                     : file.status === "error"
-                                    ? "Error"
+                                    ? "Failed"
+                                    : file.status === "paused"
+                                    ? "Paused"
                                     : file.status}
                                 </span>
                                 {file.summary && file.status === "complete" && (
@@ -890,8 +1283,54 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
                               </div>
                             )}
                           </div>
-                          {file.progress !== undefined && file.progress > 0 && file.progress < 100 && (
-                            <Progress value={file.progress} className="h-1 mt-2" />
+                          {/* Enhanced Progress Bar - shows for all processing states */}
+                          {(file.status === "queued" || file.status === "uploading" || file.status === "processing" || file.status === "analyzing") && (
+                            <div className="mt-2 space-y-1">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-zinc-500">
+                                  {file.status === "queued" ? "Waiting in queue..." : 
+                                   file.status === "uploading" ? "Uploading file..." :
+                                   file.status === "analyzing" ? "AI analyzing..." : "Processing..."}
+                                </span>
+                                <span className="text-zinc-400 font-mono">
+                                  {file.progress || 0}%
+                                </span>
+                              </div>
+                              <div className="relative h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+                                <div 
+                                  className={cn(
+                                    "h-full transition-all duration-500 ease-out rounded-full",
+                                    file.status === "queued" ? "bg-zinc-600" :
+                                    file.status === "analyzing" ? "bg-gradient-to-r from-purple-500 to-blue-500" :
+                                    "bg-gradient-to-r from-blue-500 to-cyan-500"
+                                  )}
+                                  style={{ width: `${file.progress || 0}%` }}
+                                />
+                                {/* Animated shimmer effect */}
+                                <div className="absolute inset-0 -translate-x-full animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+                              </div>
+                            </div>
+                          )}
+                          {/* Show completion indicator for done status */}
+                          {file.status === "complete" && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <div className="h-2 w-full rounded-full bg-green-500/20">
+                                <div className="h-full w-full rounded-full bg-green-500" />
+                              </div>
+                              <span className="text-xs text-green-400 font-medium whitespace-nowrap">Done</span>
+                            </div>
+                          )}
+                          {/* Show paused indicator */}
+                          {file.status === "paused" && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <div className="h-2 w-full rounded-full bg-orange-500/20">
+                                <div 
+                                  className="h-full rounded-full bg-orange-500"
+                                  style={{ width: `${file.progress || 0}%` }}
+                                />
+                              </div>
+                              <span className="text-xs text-orange-400 font-medium whitespace-nowrap">{file.progress || 0}%</span>
+                            </div>
                           )}
                           {file.error && file.status === "error" && (
                             <p className="text-xs text-red-400 mt-1 truncate" title={file.error}>
@@ -899,16 +1338,110 @@ export function BulkQCUpload({ onUploadComplete, projectId }: BulkUploadProps) {
                             </p>
                           )}
                         </div>
-                        {!uploading && file.status !== "complete" && file.status !== "error" && file.status !== "needs_review" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => file.id && removeFile(file.id)}
-                            className="h-8 w-8 p-0 text-zinc-400 hover:text-red-400"
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        )}
+                        {/* File Actions Dropdown */}
+                        <div className="flex items-center gap-1">
+                          {/* Quick action: Pause/Resume for active jobs */}
+                          {(file.status === "queued" || file.status === "processing" || file.status === "analyzing") && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => file.id && pauseFile(file.id)}
+                              className="h-8 w-8 p-0 text-zinc-400 hover:text-orange-400 transition-colors"
+                              title="Pause processing"
+                            >
+                              <Pause className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {file.status === "paused" && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => file.id && resumeFile(file.id)}
+                              className="h-8 w-8 p-0 text-zinc-400 hover:text-green-400 transition-colors"
+                              title="Resume processing"
+                            >
+                              <Play className="h-4 w-4" />
+                            </Button>
+                          )}
+                          
+                          {/* Actions Dropdown */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-zinc-400 hover:text-white transition-colors"
+                              >
+                                <MoreVertical className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-48 bg-zinc-900 border-zinc-700">
+                              {/* View Results - only for completed files */}
+                              {(file.status === "complete" || file.status === "needs_review") && (
+                                <DropdownMenuItem
+                                  onClick={() => viewResults(file)}
+                                  className="text-zinc-300 hover:text-white hover:bg-zinc-800 cursor-pointer"
+                                >
+                                  <Eye className="h-4 w-4 mr-2" />
+                                  View Results
+                                </DropdownMenuItem>
+                              )}
+                              
+                              {/* Open in Google Drive - only for Drive files */}
+                              {(file.driveLink || file.driveFileId) && (
+                                <DropdownMenuItem
+                                  onClick={() => openInDrive(file)}
+                                  className="text-zinc-300 hover:text-white hover:bg-zinc-800 cursor-pointer"
+                                >
+                                  <ExternalLink className="h-4 w-4 mr-2" />
+                                  Open in Drive
+                                </DropdownMenuItem>
+                              )}
+                              
+                              {/* Download */}
+                              <DropdownMenuItem
+                                onClick={() => downloadFile(file)}
+                                className="text-zinc-300 hover:text-white hover:bg-zinc-800 cursor-pointer"
+                              >
+                                <Download className="h-4 w-4 mr-2" />
+                                Download
+                              </DropdownMenuItem>
+                              
+                              <DropdownMenuSeparator className="bg-zinc-700" />
+                              
+                              {/* Pause/Resume */}
+                              {(file.status === "queued" || file.status === "processing" || file.status === "analyzing") && (
+                                <DropdownMenuItem
+                                  onClick={() => file.id && pauseFile(file.id)}
+                                  className="text-zinc-300 hover:text-orange-400 hover:bg-zinc-800 cursor-pointer"
+                                >
+                                  <Pause className="h-4 w-4 mr-2" />
+                                  Pause Processing
+                                </DropdownMenuItem>
+                              )}
+                              {file.status === "paused" && (
+                                <DropdownMenuItem
+                                  onClick={() => file.id && resumeFile(file.id)}
+                                  className="text-zinc-300 hover:text-green-400 hover:bg-zinc-800 cursor-pointer"
+                                >
+                                  <Play className="h-4 w-4 mr-2" />
+                                  Resume Processing
+                                </DropdownMenuItem>
+                              )}
+                              
+                              {/* Delete/Remove */}
+                              <DropdownMenuItem
+                                onClick={() => file.id && removeFile(file.id)}
+                                className="text-red-400 hover:text-red-300 hover:bg-zinc-800 cursor-pointer"
+                              >
+                                <Trash2 className="h-4 w-4 mr-2" />
+                                {file.jobId && (file.status === "queued" || file.status === "processing" || file.status === "analyzing")
+                                  ? "Cancel & Remove"
+                                  : "Remove"}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                       </motion.div>
                     ))}
                   </div>

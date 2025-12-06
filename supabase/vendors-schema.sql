@@ -147,5 +147,3 @@ WHERE p.id = (SELECT id FROM auth.users WHERE email = 'alokickstudios@gmail.com'
 
 
 
-
-

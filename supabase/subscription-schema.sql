@@ -168,5 +168,3 @@ CREATE POLICY "Users can view own org qc jobs" ON qc_jobs FOR SELECT TO authenti
 
 -- Note: Updates/Inserts should be done via service role or with proper admin checks
 
-
-

@@ -34,5 +34,3 @@ COMMENT ON COLUMN qc_jobs.source_path IS 'Canonical path: Supabase storage path 
 COMMENT ON COLUMN qc_jobs.result_json IS 'Complete QC result JSON (replaces result field)';
 COMMENT ON COLUMN qc_jobs.status IS 'Job status: queued (ready), running (processing), completed (done), failed (error)';
 
-
-

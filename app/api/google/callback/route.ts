@@ -150,38 +150,50 @@ export async function GET(request: NextRequest) {
         // Get the authenticated user from session
         const serverClient = await createServerClient();
         const { data: { user } } = await serverClient.auth.getUser();
-
-        const { encrypt } = await import("@/lib/utils/crypto");
-
-        const encryptedAccessToken = await encrypt(tokens.access_token);
-        const encryptedRefreshToken = tokens.refresh_token
-          ? await encrypt(tokens.refresh_token)
-          : null;
         
         if (user) {
           // Store with user_id
           const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString();
           
-          // Try upsert with user_id first
-          const { error: userError } = await supabase
+          // Try to delete existing token for this user first, then insert
+          // This avoids the ON CONFLICT constraint issue
+          try {
+            await supabase
+              .from("google_tokens")
+              .delete()
+              .eq("user_id", user.id);
+          } catch {
+            // Ignore errors if delete fails (token might not exist)
+          }
+          
+          // Insert new token
+          const { error: insertError } = await supabase
             .from("google_tokens")
-            .upsert({
+            .insert({
+              id: user.id, // Use user.id as the primary key for user-specific tokens
               user_id: user.id,
-              access_token: encryptedAccessToken,
-              refresh_token: encryptedRefreshToken,
+              access_token: tokens.access_token,
+              refresh_token: tokens.refresh_token || null,
               expires_at: expiresAt,
               created_at: new Date().toISOString(),
-            }, {
-              onConflict: "user_id"
             });
           
-          if (userError) {
-            console.warn("Could not store token with user_id, trying with id:", userError);
-            // Fallback: store with id="default" if user_id column doesn't exist
-            await supabase.from("google_tokens").upsert({
+          if (insertError) {
+            console.warn("Could not store token with user_id, trying with id='default':", insertError);
+            // Fallback: store with id="default" if user_id column doesn't exist or insert failed
+            try {
+              await supabase
+                .from("google_tokens")
+                .delete()
+                .eq("id", "default");
+            } catch {
+              // Ignore errors
+            }
+              
+            await supabase.from("google_tokens").insert({
               id: "default",
-              access_token: encryptedAccessToken,
-              refresh_token: encryptedRefreshToken,
+              access_token: tokens.access_token,
+              refresh_token: tokens.refresh_token || null,
               expires_at: expiresAt,
               created_at: new Date().toISOString(),
             });
@@ -191,12 +203,11 @@ export async function GET(request: NextRequest) {
         } else {
           // No user session, store as default
           console.log("[GoogleCallback] No user session, storing as default");
-          const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString();
           await supabase.from("google_tokens").upsert({
             id: "default",
-            access_token: encryptedAccessToken,
-            refresh_token: encryptedRefreshToken,
-            expires_at: expiresAt,
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token || null,
+            expires_at: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
             created_at: new Date().toISOString(),
           });
         }

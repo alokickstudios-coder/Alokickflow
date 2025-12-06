@@ -73,5 +73,3 @@ WHERE id = 'deliveries';
 --       WHERE id = auth.uid() AND role IN ('admin', 'super_admin', 'owner')
 --     )
 
-
-

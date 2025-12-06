@@ -37,5 +37,3 @@ WHERE tc.table_name = 'drive_assignments'
 
 
 
-
-

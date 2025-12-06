@@ -10,5 +10,3 @@ CREATE INDEX IF NOT EXISTS idx_projects_qc_sheet_id ON projects(qc_sheet_id) WHE
 -- Add comment
 COMMENT ON COLUMN projects.qc_sheet_id IS 'Google Drive Sheet ID for this project''s QC results sheet (copied from template)';
 
-
-

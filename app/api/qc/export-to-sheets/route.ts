@@ -4,9 +4,10 @@ import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { logQCEvent } from "@/lib/utils/qc-logger";
 import {
-  getOrCreateProjectQcSheet,
-  getSheetRowCount,
-  clearSheetDataRows,
+  getOrCreateVendorProjectSheet,
+  clearTabDataRows,
+  buildRowFromQcResult,
+  getVendorForProject,
 } from "@/lib/services/qcSheetService";
 
 export const dynamic = "force-dynamic";
@@ -23,82 +24,45 @@ function getAdminClient() {
 
 /**
  * Extract episode number from filename
- * Examples:
- * - VTV0001_001_final.mp4 -> 1
- * - VTV0001-EP02-final.mp4 -> 2
- * - episode_3.mp4 -> 3
  */
 function extractEpisodeNumber(filename: string, index: number): number {
-  // Try various patterns
   const patterns = [
-    /[_-](\d{1,4})[_-]/, // _001_ or -001-
-    /EP[_-]?(\d{1,4})/i, // EP001 or EP-001
-    /episode[_-]?(\d{1,4})/i, // episode_1
-    /[_-](\d{1,4})\./, // _001.mp4
+    /[_-](\d{1,4})[_-]/,
+    /EP[_-]?(\d{1,4})/i,
+    /episode[_-]?(\d{1,4})/i,
+    /[_-](\d{1,4})\./,
+    /(\d{1,4})\.(?:mp4|mkv|mov|avi|wav|mp3)/i,
   ];
 
   for (const pattern of patterns) {
     const match = filename.match(pattern);
     if (match) {
       const num = parseInt(match[1], 10);
-      if (!isNaN(num) && num > 0) {
-        return num;
-      }
+      if (!isNaN(num) && num > 0 && num < 10000) return num;
     }
   }
 
-  // Fallback to index + 1
   return index + 1;
-}
-
-/**
- * Format QC comments from errors array
- */
-function formatQCComments(errors: any[]): { comment1: string; comment2: string } {
-  if (!Array.isArray(errors) || errors.length === 0) {
-    return { comment1: "", comment2: "" };
-  }
-
-  const formatted = errors.map((err: any) => {
-    if (typeof err === "string") return err;
-    const time = err.timestamp && err.timestamp > 0 
-      ? `${Math.floor(err.timestamp)}s: ` 
-      : "";
-    return `${time}${err.message || err.type || String(err)}`;
-  });
-
-  const mid = Math.ceil(formatted.length / 2);
-  return {
-    comment1: formatted.slice(0, mid).join(" / "),
-    comment2: formatted.slice(mid).join(" / "),
-  };
-}
-
-/**
- * Get storage URL for a delivery
- */
-function getStorageUrl(storagePath: string): string {
-  if (!storagePath) return "";
-  
-  // If it's already a full URL, return it
-  if (storagePath.startsWith("http")) {
-    return storagePath;
-  }
-
-  // Construct Supabase storage URL
-  const bucket = "deliveries";
-  return `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/${bucket}/${storagePath}`;
 }
 
 /**
  * POST /api/qc/export-to-sheets
  * 
- * Export QC results to Google Sheets using template-based per-project sheets
+ * Export QC results to Google Sheets
+ * 
+ * Structure:
+ * - One spreadsheet per VENDOR (e.g., "ABC Studio - QC Reports")
+ * - One TAB per PROJECT within the vendor's spreadsheet
+ * - Professional formatting with color-coded status
  */
 export async function POST(request: NextRequest) {
   let projectId: string | undefined;
   let userId: string | undefined;
   let organisationId: string | undefined;
+
+  console.log("[ExportToSheets] ========================================");
+  console.log("[ExportToSheets] Starting QC Export to Google Sheets");
+  console.log("[ExportToSheets] ========================================");
 
   try {
     const supabase = await createServerClient();
@@ -117,6 +81,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "projectId is required" }, { status: 400 });
     }
 
+    console.log(`[ExportToSheets] Project ID: ${projectId}`);
+    console.log(`[ExportToSheets] User ID: ${userId}`);
+
     // Get user's organization
     const { data: profile } = await supabase
       .from("profiles")
@@ -129,6 +96,7 @@ export async function POST(request: NextRequest) {
     }
 
     organisationId = profile.organization_id;
+    console.log(`[ExportToSheets] Organization ID: ${organisationId}`);
 
     // Get admin client
     const adminClient = getAdminClient();
@@ -136,52 +104,38 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    // Get Google access token - try multiple sources
+    // Get Google access token
     const cookieStore = await cookies();
     let accessToken = cookieStore.get("google_access_token")?.value;
 
     if (!accessToken) {
-      // Try to get from database for this user
       const { data: userTokens } = await adminClient
         .from("google_tokens")
         .select("access_token, expires_at, refresh_token")
         .eq("user_id", user.id)
         .maybeSingle();
 
-      if (userTokens?.access_token) {
-        const { decrypt, encrypt } = await import("@/lib/utils/crypto");
+      if (userTokens?.access_token && userTokens.expires_at && new Date(userTokens.expires_at) > new Date()) {
+        accessToken = userTokens.access_token;
+      } else if (userTokens?.refresh_token) {
         try {
-            const decryptedAccessToken = userTokens.access_token.includes(':') ? await decrypt(userTokens.access_token) : userTokens.access_token;
-            if (userTokens.expires_at && new Date(userTokens.expires_at) > new Date()) {
-                accessToken = decryptedAccessToken;
-            } else if (userTokens.refresh_token) {
-                const decryptedRefreshToken = userTokens.refresh_token.includes(':') ? await decrypt(userTokens.refresh_token) : userTokens.refresh_token;
-                // Try to refresh the token
-                try {
-                const { refreshAccessToken } = await import("@/lib/google-drive/client");
-                const refreshed = await refreshAccessToken(decryptedRefreshToken);
-                accessToken = refreshed.access_token;
-                
-                const encryptedAccessToken = await encrypt(refreshed.access_token);
-                // Update token in DB
-                await adminClient
-                    .from("google_tokens")
-                    .update({
-                    access_token: encryptedAccessToken,
-                    expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
-                    })
-                    .eq("user_id", user.id);
-                } catch (refreshError) {
-                console.warn("[ExportToSheets] Failed to refresh token:", refreshError);
-                }
-            }
-        } catch (e) {
-            console.error("Failed to decrypt access token", e);
+          const { refreshAccessToken } = await import("@/lib/google-drive/client");
+          const refreshed = await refreshAccessToken(userTokens.refresh_token);
+          accessToken = refreshed.access_token;
+          
+          await adminClient
+            .from("google_tokens")
+            .update({
+              access_token: refreshed.access_token,
+              expires_at: new Date(refreshed.expires_at || Date.now() + 3600000).toISOString(),
+            })
+            .eq("user_id", user.id);
+        } catch (refreshError) {
+          console.warn("[ExportToSheets] Failed to refresh token:", refreshError);
         }
       }
     }
 
-    // Fallback: try any valid token from the organization
     if (!accessToken) {
       const { data: orgTokens } = await adminClient
         .from("google_tokens")
@@ -190,14 +144,7 @@ export async function POST(request: NextRequest) {
         .limit(1)
         .maybeSingle();
       
-        if (orgTokens?.access_token) {
-            const { decrypt } = await import("@/lib/utils/crypto");
-            try {
-                accessToken = orgTokens.access_token.includes(':') ? await decrypt(orgTokens.access_token) : orgTokens.access_token;
-            } catch (e) {
-                console.error("Failed to decrypt access token", e);
-            }
-        }
+      accessToken = orgTokens?.access_token || null;
     }
 
     if (!accessToken) {
@@ -206,45 +153,6 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
-
-    // Get or create project QC sheet
-    console.log(`[ExportToSheets] Getting or creating QC sheet for project ${projectId}`);
-    const { sheetId, sheetUrl, isNew } = await getOrCreateProjectQcSheet(projectId, accessToken);
-    console.log(`[ExportToSheets] Using sheet ${sheetId} (new: ${isNew})`);
-
-    // Fetch QC results from qc_jobs table (source of truth)
-    // Also fetch linked delivery records for metadata (rectified links, etc.)
-    const { data: qcJobs, error: jobsError } = await adminClient
-      .from("qc_jobs")
-      .select(
-        `
-        *,
-        project:projects(code, name),
-        delivery:deliveries(id, storage_path, metadata)
-      `
-      )
-      .eq("organisation_id", organisationId)
-      .eq("project_id", projectId)
-      .eq("status", "completed")
-      .order("created_at", { ascending: true });
-
-    if (jobsError) {
-      console.error("[ExportToSheets] Error fetching QC jobs:", jobsError);
-      throw jobsError;
-    }
-
-    if (!qcJobs || qcJobs.length === 0) {
-      return NextResponse.json(
-        { 
-          error: "No QC results found. Please ensure QC has been completed for files in this project.",
-        },
-        { status: 404 }
-      );
-    }
-
-    console.log(`[ExportToSheets] Found ${qcJobs.length} QC results to export`);
-
-    logQCEvent.exportStarted(projectId, qcJobs.length, organisationId || "");
 
     // Get project info
     const { data: project } = await adminClient
@@ -259,251 +167,219 @@ export async function POST(request: NextRequest) {
 
     const projectCode = (project.code as string) || "";
     const projectName = (project.name as string) || "";
-    // Use defaults - settings column may not exist in all schema versions
-    const defaultLanguage = "Chinese";
-    const defaultStudio = "AKS Dubbing";
+    
+    console.log(`[ExportToSheets] Project: ${projectCode} - ${projectName}`);
 
-    // STEP 1: Always clear existing data rows before writing fresh QC data
-    // This ensures we never have old template data or stale export data
-    console.log(`[ExportToSheets] Clearing existing data rows from sheet`);
-    try {
-      await clearSheetDataRows(sheetId, accessToken);
-      console.log(`[ExportToSheets] Successfully cleared old data rows`);
-    } catch (clearError) {
-      console.error(`[ExportToSheets] Warning: Failed to clear data rows:`, clearError);
-      // Continue anyway - we'll overwrite starting from row 2
+    // Get vendor info
+    const vendor = await getVendorForProject(projectId);
+    const vendorName = vendor?.name || "All Vendors";
+    
+    console.log(`[ExportToSheets] Vendor: ${vendorName}`);
+
+    // Get or create vendor's spreadsheet with project tab
+    console.log(`[ExportToSheets] Getting/Creating spreadsheet...`);
+    const { sheetId, sheetUrl, isNew, tabName } = await getOrCreateVendorProjectSheet({
+      projectId,
+      projectCode,
+      projectName,
+      vendorName,
+      vendorId: vendor?.id,
+      accessToken,
+    });
+    
+    console.log(`[ExportToSheets] Spreadsheet: ${sheetId}`);
+    console.log(`[ExportToSheets] Tab: ${tabName}`);
+    console.log(`[ExportToSheets] Is New: ${isNew}`);
+
+    // Fetch QC results from database
+    console.log(`[ExportToSheets] Fetching QC results...`);
+    const { data: qcJobs, error: jobsError } = await adminClient
+      .from("qc_jobs")
+      .select(`
+        *,
+        project:projects(code, name),
+        delivery:deliveries(id, storage_path, metadata)
+      `)
+      .eq("organisation_id", organisationId)
+      .eq("project_id", projectId)
+      .eq("status", "completed")
+      .order("created_at", { ascending: true });
+
+    if (jobsError) {
+      console.error("[ExportToSheets] Error fetching QC jobs:", jobsError);
+      throw jobsError;
     }
 
-    // Always start writing from row 2 (after header)
-    const startRow = 2;
-    console.log(`[ExportToSheets] Starting to write fresh QC data at row ${startRow}`);
+    console.log(`[ExportToSheets] Found ${qcJobs?.length || 0} completed QC jobs`);
 
-    // Prepare data rows matching template format
-    // Based on template structure:
-    // A: Concat, B: Number, C: English Titles, D: Language, E: Studio, F: Episode#, 
-    // G: Old Video, H: Comment-1, I: Comment-2, J: Rectified Video, 
-    // K: QC-2 Comments, L: Rectified SRT file link, M: Rectified Burned Video link, 
-    // N: Agency Comments, O: Map, P: Column 1, Q: Number, R: English Titles,
-    // S: COUNTA of QC-2 Comments, T: COUNTA of Rectified Burned Video link
-    const rows: any[][] = [];
+    if (!qcJobs || qcJobs.length === 0) {
+      return NextResponse.json(
+        { error: "No QC results found. Please ensure QC has been completed for files in this project." },
+        { status: 404 }
+      );
+    }
+
+    logQCEvent.exportStarted(projectId, qcJobs.length, organisationId || "");
+
+    // STEP 1: Clear existing data in the project tab
+    console.log(`[ExportToSheets] Clearing existing data in tab "${tabName}"...`);
+    try {
+      await clearTabDataRows(sheetId, tabName || projectCode, accessToken);
+      console.log(`[ExportToSheets] ✓ Data cleared`);
+    } catch (clearError) {
+      console.warn(`[ExportToSheets] Warning: Could not clear data:`, clearError);
+    }
+
+    // STEP 2: Build fresh QC data rows
+    console.log(`[ExportToSheets] Building data rows...`);
+    const rows: string[][] = [];
 
     qcJobs.forEach((job: any, index: number) => {
       const fileName = job.file_name || `file-${index + 1}`;
       const episodeNumber = extractEpisodeNumber(fileName, index);
 
-      // Build concat (e.g., VTV0001-1)
-      const concat = `${projectCode}-${episodeNumber}`;
-
-      // Extract QC data from result_json
-      const qcReport = job.result_json || {};
-      const qcErrors = qcReport.errors || [];
-      
-      // Collect all errors from various sources
-      const allErrors: any[] = [...qcErrors];
-      
-      // Add errors from qc_report structure
-      if (qcReport.basicQC) {
-        if (qcReport.basicQC.audioMissing?.detected) {
-          allErrors.push({
-            type: "Audio Missing",
-            message: qcReport.basicQC.audioMissing.error || "Audio track is missing",
-            timestamp: 0,
-            severity: "error",
-          });
-        }
-        if (qcReport.basicQC.loudness?.status === "failed") {
-          allErrors.push({
-            type: "Loudness Compliance",
-            message: qcReport.basicQC.loudness.message || "Loudness compliance failed",
-            timestamp: 0,
-            severity: "error",
-          });
-        }
-        if (qcReport.basicQC.missingDialogue?.detected) {
-          qcReport.basicQC.missingDialogue.segments?.forEach((seg: any) => {
-            allErrors.push({
-              type: "Missing Dialogue",
-              message: seg.message || "Missing dialogue detected",
-              timestamp: seg.start || 0,
-              severity: "warning",
-            });
-          });
-        }
-        if (qcReport.basicQC.subtitleTiming?.errors) {
-          allErrors.push(...qcReport.basicQC.subtitleTiming.errors);
-        }
-        if (qcReport.basicQC.visualQuality?.status === "failed") {
-          qcReport.basicQC.visualQuality.issues?.forEach((issue: any) => {
-            allErrors.push({
-              type: "Visual Quality",
-              message: issue.message || "Visual quality issue",
-              timestamp: 0,
-              severity: "error",
-            });
-          });
-        }
-      }
-      
-      // Add video glitch errors
-      if (qcReport.videoGlitch?.glitches) {
-        allErrors.push(...qcReport.videoGlitch.glitches.map((g: any) => ({
-          type: g.type || "Video Glitch",
-          message: g.message || "Video glitch detected",
-          timestamp: g.timestamp || 0,
-          severity: g.severity || "error",
-        })));
-      }
-      
-      // Add BGM errors
-      if (qcReport.bgm?.issues) {
-        allErrors.push(...qcReport.bgm.issues.map((i: any) => ({
-          type: i.type || "BGM",
-          message: i.message || "BGM issue detected",
-          timestamp: i.timestamp || 0,
-          severity: i.severity || "warning",
-        })));
-      }
-      
-      // Format comments
-      const { comment1, comment2 } = formatQCComments(allErrors);
-
-      // Get QC-2 comments (from qc_report.errors if available, or from premium report)
-      const qc2Errors = qcReport.errors || qcReport.premiumReport?.summary?.criticalIssues || [];
-      const qc2Comments = formatQCComments(
-        Array.isArray(qc2Errors) 
-          ? qc2Errors.map((e: any) => typeof e === "string" ? { message: e } : e)
-          : []
-      ).comment1;
-
-      // Get storage URL from delivery or source_path
-      const delivery = job.delivery || null;
-      const storagePath = delivery?.storage_path || job.source_path || "";
-      const storageUrl = storagePath 
-        ? (storagePath.startsWith("http") 
-            ? storagePath 
-            : getStorageUrl(storagePath))
-        : "";
-
-      // Extract rectified links from metadata if available
-      // Check both delivery metadata and result_json metadata
-      const deliveryMetadata = delivery?.metadata || {};
-      const qcMetadata = qcReport.metadata || {};
-      const metadata = { ...deliveryMetadata, ...qcMetadata };
-      
-      const rectifiedVideo = metadata.rectified_video_link || "";
-      const rectifiedSRT = metadata.rectified_srt_link || "";
-      const rectifiedBurned = metadata.rectified_burned_video_link || "";
-      const agencyComments = metadata.agency_comments || "";
-
-      // Build row matching template columns (format-only, no template data)
-      // Column mapping based on template structure:
-      // A: Concat, B: Number, C: English Titles, D: Language, E: Studio, F: Episode#,
-      // G: Old Video, H: Comment-1, I: Comment-2, J: Rectified Video,
-      // K: QC-2 Comments, L: Rectified SRT file link, M: Rectified Burned Video link,
-      // N: Agency Comments, O: Map, P: Column 1, Q: Number, R: English Titles,
-      // S: COUNTA formula (auto), T: COUNTA formula (auto)
-      const row = [
-        concat, // A: Concat (e.g., "VTV0001-1")
-        projectCode, // B: Number (project code)
-        projectName, // C: English Titles
-        defaultLanguage, // D: Language
-        defaultStudio, // E: Studio
-        episodeNumber.toString(), // F: Episode#
-        storageUrl || fileName, // G: Old Video (link or filename)
-        comment1, // H: Comment-1 (primary QC issues)
-        comment2, // I: Comment-2 (secondary QC notes)
-        rectifiedVideo || "", // J: Rectified Video (to be filled manually or from metadata)
-        qc2Comments, // K: QC-2 Comments (post-rectification)
-        rectifiedSRT || "", // L: Rectified SRT file link
-        rectifiedBurned || "", // M: Rectified Burned Video link (Final Submission)
-        agencyComments || "", // N: Agency Comments
-        projectCode, // O: Map (project code for mapping)
-        "", // P: Column 1 (reserved/empty)
-        projectCode, // Q: Number (duplicate project code)
-        projectName, // R: English Titles (duplicate)
-        // S and T are formulas - leave empty, template's formulas will auto-calculate
-        "",
-        "",
-      ];
+      const row = buildRowFromQcResult(job, projectCode, projectName, episodeNumber, {
+        language: project.settings?.language || "Chinese",
+        vendorName,
+      });
 
       rows.push(row);
     });
 
-    console.log(`[ExportToSheets] Prepared ${rows.length} fresh QC data rows to write`);
-    console.log(`[ExportToSheets] Project: ${projectCode} (${projectName})`);
-    console.log(`[ExportToSheets] QC jobs processed: ${qcJobs.length}`);
+    console.log(`[ExportToSheets] Built ${rows.length} data rows`);
     
-    // Log sample row for debugging
     if (rows.length > 0) {
-      console.log(`[ExportToSheets] Sample row (first):`, rows[0].slice(0, 10)); // First 10 columns
+      console.log(`[ExportToSheets] Sample row: [${rows[0].slice(0, 5).join(", ")}...]`);
     }
 
-    // Write rows to sheet (starting at startRow)
-    const range = `A${startRow}:T${startRow + rows.length - 1}`;
+    // STEP 3: Write data to sheet
+    console.log(`[ExportToSheets] Writing data to sheet...`);
+    const startRow = 2;
+    const range = `'${tabName}'!A${startRow}:P${startRow + rows.length - 1}`;
+    
     console.log(`[ExportToSheets] Writing to range: ${range}`);
 
     const updateResponse = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?valueInputOption=RAW`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
       {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          values: rows,
-        }),
+        body: JSON.stringify({ values: rows }),
       }
     );
 
     if (!updateResponse.ok) {
       const error = await updateResponse.json();
       console.error("[ExportToSheets] Failed to write rows:", error);
-      throw new Error(error.error?.message || "Failed to populate spreadsheet");
+      
+      let errorMessage = error.error?.message || "Failed to write data to spreadsheet";
+      if (errorMessage.includes("has not been used in project") || errorMessage.includes("disabled")) {
+        errorMessage = "Google Sheets API is not enabled. Please enable it at: https://console.developers.google.com/apis/api/sheets.googleapis.com/overview";
+      }
+      throw new Error(errorMessage);
     }
 
     const updateData = await updateResponse.json();
-    console.log(`[ExportToSheets] Successfully wrote ${rows.length} rows to sheet`);
-    console.log(`[ExportToSheets] Updated cells: ${updateData.updatedCells || 'unknown'}`);
-    
-    // Verify data was written by reading back a sample
-    const verifyResponse = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A${startRow}:J${startRow}?valueRenderOption=UNFORMATTED_VALUE`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
-    );
-    
-    if (verifyResponse.ok) {
-      const verifyData = await verifyResponse.json();
-      console.log(`[ExportToSheets] Verification - first row data:`, verifyData.values?.[0]?.slice(0, 5));
-    }
+    console.log(`[ExportToSheets] ✓ Wrote ${rows.length} rows`);
+    console.log(`[ExportToSheets]   Updated cells: ${updateData.updatedCells || "unknown"}`);
 
-    // Note: Formulas in columns S and T are already in the template, so they'll automatically
-    // calculate based on the data we just wrote. No need to manually add formulas.
+    // Auto-resize columns for better readability
+    try {
+      const spreadsheetInfo = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      
+      if (spreadsheetInfo.ok) {
+        const info = await spreadsheetInfo.json();
+        const targetSheet = info.sheets?.find((s: any) => 
+          s.properties?.title?.toLowerCase() === (tabName || projectCode).toLowerCase()
+        );
+        
+        if (targetSheet) {
+          await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                requests: [{
+                  autoResizeDimensions: {
+                    dimensions: {
+                      sheetId: targetSheet.properties.sheetId,
+                      dimension: "COLUMNS",
+                      startIndex: 0,
+                      endIndex: 16,
+                    },
+                  },
+                }],
+              }),
+            }
+          );
+        }
+      }
+    } catch {
+      // Non-critical, ignore
+    }
 
     logQCEvent.exportCompleted(sheetId, projectId, organisationId || "");
 
-    console.log(`[ExportToSheets] ✅ Export completed successfully`);
-    console.log(`[ExportToSheets]   - Sheet ID: ${sheetId}`);
-    console.log(`[ExportToSheets]   - Rows written: ${rows.length}`);
-    console.log(`[ExportToSheets]   - Project: ${projectCode} (${projectName})`);
-    console.log(`[ExportToSheets]   - Sheet URL: ${sheetUrl}`);
-    console.log(`[ExportToSheets]   - Template data cleared: Yes`);
-    console.log(`[ExportToSheets]   - Fresh QC data only: Yes`);
+    // Build final URL with tab focus
+    let finalUrl = sheetUrl;
+    if (tabName) {
+      // Get tab GID for direct linking
+      try {
+        const spreadsheetInfo = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        
+        if (spreadsheetInfo.ok) {
+          const info = await spreadsheetInfo.json();
+          const targetSheet = info.sheets?.find((s: any) => 
+            s.properties?.title?.toLowerCase() === tabName.toLowerCase()
+          );
+          
+          if (targetSheet) {
+            finalUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/edit#gid=${targetSheet.properties.sheetId}`;
+          }
+        }
+      } catch {
+        // Use default URL
+      }
+    }
+
+    console.log(`[ExportToSheets] ========================================`);
+    console.log(`[ExportToSheets] EXPORT COMPLETED SUCCESSFULLY`);
+    console.log(`[ExportToSheets] ========================================`);
+    console.log(`[ExportToSheets]   Vendor: ${vendorName}`);
+    console.log(`[ExportToSheets]   Project: ${projectCode} (${projectName})`);
+    console.log(`[ExportToSheets]   Rows: ${rows.length}`);
+    console.log(`[ExportToSheets]   URL: ${finalUrl}`);
+    console.log(`[ExportToSheets] ========================================`);
 
     return NextResponse.json({
       success: true,
       spreadsheetId: sheetId,
-      sheetUrl,
+      sheetUrl: finalUrl,
       rowCount: rows.length,
       isNewSheet: isNew,
-      message: `Successfully exported ${rows.length} QC result(s) to Google Sheets. Old template data has been cleared.`,
+      vendorName,
+      projectCode,
+      tabName,
+      message: `Successfully exported ${rows.length} QC result(s) for ${vendorName} / ${projectCode}`,
     });
   } catch (error: any) {
-    console.error("[ExportToSheets] Error:", error);
+    console.error("[ExportToSheets] ========================================");
+    console.error("[ExportToSheets] EXPORT FAILED");
+    console.error("[ExportToSheets] ========================================");
+    console.error("[ExportToSheets] Error:", error.message);
     console.error("[ExportToSheets] Stack:", error.stack);
     
     if (projectId && organisationId) {

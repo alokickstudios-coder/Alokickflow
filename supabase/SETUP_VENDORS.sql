@@ -97,5 +97,3 @@ SELECT 'vendor_team_members' as table_name, count(*) as count FROM vendor_team_m
 
 
 
-
-

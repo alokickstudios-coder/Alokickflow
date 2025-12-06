@@ -1,101 +1,53 @@
--- ============================================
--- 6. PROJECT STAGES TABLE
--- ============================================
-CREATE TABLE project_stages (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),
-    stage_order INT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+-- Project stages for production workflow
+-- Stages: translation, dubbing, mixing, subtitling
+
+create table if not exists project_stages (
+  id uuid primary key default uuid_generate_v4(),
+  organization_id uuid not null references organizations(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  stage text not null check (stage in ('translation', 'dubbing', 'mixing', 'subtitling')),
+  status text not null default 'pending' check (status in ('pending', 'in_progress', 'completed')),
+  assigned_to uuid references profiles(id) on delete set null,
+  notes text,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (project_id, stage)
 );
 
--- ============================================
--- 7. PROJECT STAGE ASSIGNMENTS TABLE
--- ============================================
-CREATE TABLE project_stage_assignments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    stage_id UUID NOT NULL REFERENCES project_stages(id) ON DELETE CASCADE,
-    assignee_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+-- Basic indexes
+create index if not exists idx_project_stages_org on project_stages (organization_id);
+create index if not exists idx_project_stages_project on project_stages (project_id);
+create index if not exists idx_project_stages_stage on project_stages (stage);
 
--- ============================================
--- INDEXES for Performance
--- ============================================
-CREATE INDEX idx_project_stages_project_id ON project_stages(project_id);
-CREATE INDEX idx_project_stage_assignments_stage_id ON project_stage_assignments(stage_id);
-CREATE INDEX idx_project_stage_assignments_assignee_id ON project_stage_assignments(assignee_id);
+-- RLS is optional here because service role is used in APIs; add minimal safety
+alter table project_stages enable row level security;
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'project_stages'
+      and policyname = 'Users can view project stages'
+  ) then
+    create policy "Users can view project stages"
+    on project_stages for select
+    to authenticated
+    using (organization_id = get_user_organization_id());
+  end if;
 
--- ============================================
--- ROW LEVEL SECURITY (RLS) POLICIES
--- ============================================
-ALTER TABLE project_stages ENABLE ROW LEVEL SECURITY;
-ALTER TABLE project_stage_assignments ENABLE ROW LEVEL SECURITY;
-
--- ============================================
--- PROJECT STAGES POLICIES
--- ============================================
--- Users can view stages of projects in their organization
-CREATE POLICY "Users can view project stages in their organization"
-    ON project_stages FOR SELECT
-    USING (
-        project_id IN (
-            SELECT id FROM projects WHERE organization_id = get_user_organization_id()
-        )
-    );
-
--- Admins can manage project stages
-CREATE POLICY "Admins can manage project stages"
-    ON project_stages FOR ALL
-    USING (
-        project_id IN (
-            SELECT id FROM projects WHERE organization_id = get_user_organization_id()
-        ) AND (
-            (SELECT role FROM profiles WHERE id = auth.uid()) IN ('super_admin', 'admin')
-        )
-    );
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'project_stages'
+      and policyname = 'Users can update project stages'
+  ) then
+    create policy "Users can update project stages"
+    on project_stages for update
+    to authenticated
+    using (organization_id = get_user_organization_id());
+  end if;
+end $$;
 
 
--- ============================================
--- PROJECT STAGE ASSIGNMENTS POLICIES
--- ============================================
--- Users can view assignments of stages in their organization
-CREATE POLICY "Users can view project stage assignments in their organization"
-    ON project_stage_assignments FOR SELECT
-    USING (
-        stage_id IN (
-            SELECT id FROM project_stages WHERE project_id IN (
-                SELECT id FROM projects WHERE organization_id = get_user_organization_id()
-            )
-        )
-    );
-
--- Admins can manage project stage assignments
-CREATE POLICY "Admins can manage project stage assignments"
-    ON project_stage_assignments FOR ALL
-    USING (
-        stage_id IN (
-            SELECT id FROM project_stages WHERE project_id IN (
-                SELECT id FROM projects WHERE organization_id = get_user_organization_id()
-            )
-        ) AND (
-            (SELECT role FROM profiles WHERE id = auth.uid()) IN ('super_admin', 'admin')
-        )
-    );
-
--- Assignees can see their own assignments
-CREATE POLICY "Assignees can see their own assignments"
-    ON project_stage_assignments FOR SELECT
-    USING (
-        assignee_id = auth.uid()
-    );
-
-
--- ============================================
--- TRIGGERS
--- ============================================
-CREATE TRIGGER update_project_stages_updated_at BEFORE UPDATE ON project_stages
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

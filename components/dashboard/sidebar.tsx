@@ -20,37 +20,130 @@ import {
   Briefcase,
   Menu,
   X,
+  Workflow,
+  FileVideo,
+  ClipboardCheck,
+  GitBranch,
 } from "lucide-react";
 import { UserMenu } from "./user-menu";
 import { NotificationBell } from "./notification-bell";
 import { cn } from "@/lib/utils";
 
+// Navigation organized by workflow stages
 const navigation = [
-  { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { name: "My Work", href: "/dashboard/my-work", icon: Briefcase },
-  { name: "Deliveries", href: "/dashboard/deliveries", icon: Upload },
-  { name: "Projects", href: "/dashboard/projects", icon: FolderOpen },
-  { name: "Assignments", href: "/dashboard/assignments", icon: FolderPlus },
-  { name: "QC Results", href: "/dashboard/qc", icon: FileCheck },
-  { name: "Bulk QC", href: "/dashboard/qc/bulk", icon: Scan },
-  { name: "Vendors", href: "/dashboard/vendors", icon: Users },
-  { name: "Team", href: "/dashboard/team", icon: Users },
-  { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
-  { name: "Billing", href: "/dashboard/pricing", icon: CreditCard },
-  { name: "Settings", href: "/dashboard/settings", icon: Settings },
+  // Core Workflow
+  { 
+    name: "Dashboard", 
+    href: "/dashboard", 
+    icon: LayoutDashboard,
+    section: "overview",
+    description: "Overview & quick actions"
+  },
+  { 
+    name: "My Work", 
+    href: "/dashboard/my-work", 
+    icon: Briefcase,
+    section: "workflow",
+    description: "Your assigned tasks"
+  },
+  
+  // Production Pipeline
+  { 
+    name: "Projects", 
+    href: "/dashboard/projects", 
+    icon: FolderOpen,
+    section: "production",
+    description: "Manage productions"
+  },
+  { 
+    name: "Deliveries", 
+    href: "/dashboard/deliveries", 
+    icon: FileVideo,
+    section: "production",
+    description: "Track file deliveries"
+  },
+  { 
+    name: "Assignments", 
+    href: "/dashboard/assignments", 
+    icon: GitBranch,
+    section: "production",
+    description: "Assign work to vendors"
+  },
+  
+  // Quality Control
+  { 
+    name: "QC Hub", 
+    href: "/dashboard/qc/bulk", 
+    icon: Scan,
+    section: "quality",
+    description: "Automated QC analysis"
+  },
+  { 
+    name: "QC Results", 
+    href: "/dashboard/qc", 
+    icon: ClipboardCheck,
+    section: "quality",
+    description: "View QC reports"
+  },
+  
+  // Team & Resources
+  { 
+    name: "Vendors", 
+    href: "/dashboard/vendors", 
+    icon: Users,
+    section: "team",
+    description: "Manage vendors"
+  },
+  { 
+    name: "Team", 
+    href: "/dashboard/team", 
+    icon: Users,
+    section: "team",
+    description: "Team members"
+  },
+  
+  // Analytics & Admin
+  { 
+    name: "Analytics", 
+    href: "/dashboard/analytics", 
+    icon: BarChart3,
+    section: "admin",
+    description: "Insights & reports"
+  },
+  { 
+    name: "Billing", 
+    href: "/dashboard/pricing", 
+    icon: CreditCard,
+    section: "admin",
+    description: "Subscription & billing"
+  },
+  { 
+    name: "Settings", 
+    href: "/dashboard/settings", 
+    icon: Settings,
+    section: "admin",
+    description: "App settings"
+  },
 ];
+
+const sectionLabels: Record<string, string> = {
+  overview: "",
+  workflow: "",
+  production: "Production",
+  quality: "Quality",
+  team: "Team",
+  admin: "Admin",
+};
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
 
-  // Close mobile menu on route change
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
 
-  // Handle escape key to close mobile menu
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMobileOpen(false);
@@ -59,7 +152,6 @@ export function Sidebar() {
     return () => document.removeEventListener("keydown", handleEscape);
   }, []);
 
-  // Prevent body scroll when mobile menu is open
   useEffect(() => {
     if (mobileOpen) {
       document.body.style.overflow = "hidden";
@@ -85,6 +177,16 @@ export function Sidebar() {
     window.dispatchEvent(new Event("sidebarToggle"));
   };
 
+  // Group navigation items by section
+  const groupedNav = navigation.reduce((acc, item) => {
+    const section = item.section;
+    if (!acc[section]) acc[section] = [];
+    acc[section].push(item);
+    return acc;
+  }, {} as Record<string, typeof navigation>);
+
+  const sectionOrder = ["overview", "workflow", "production", "quality", "team", "admin"];
+
   const NavContent = ({ isMobile = false }: { isMobile?: boolean }) => (
     <>
       {/* Logo/Header */}
@@ -99,9 +201,28 @@ export function Sidebar() {
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -10 }}
-              className="font-semibold text-white text-lg"
+              className="flex items-center gap-2"
             >
-              AlokickFlow
+              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-500 to-purple-700 flex items-center justify-center">
+                <Workflow className="h-4 w-4 text-white" />
+              </div>
+              <div>
+                <span className="font-semibold text-white text-lg">AlokickFlow</span>
+                {!isMobile && (
+                  <span className="block text-[10px] text-zinc-500 -mt-0.5">Media Workflow</span>
+                )}
+              </div>
+            </motion.div>
+          )}
+          {collapsed && !isMobile && (
+            <motion.div
+              key="logo-collapsed"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-500 to-purple-700 flex items-center justify-center mx-auto"
+            >
+              <Workflow className="h-4 w-4 text-white" />
             </motion.div>
           )}
         </AnimatePresence>
@@ -134,44 +255,69 @@ export function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto">
-        {navigation.map((item) => {
-          const isActive = pathname === item.href;
-          const Icon = item.icon;
+      <nav className="flex-1 px-3 py-4 overflow-y-auto">
+        {sectionOrder.map((sectionKey) => {
+          const items = groupedNav[sectionKey];
+          if (!items) return null;
+          const label = sectionLabels[sectionKey];
 
           return (
-            <Link
-              key={item.name}
-              href={item.href}
-              onClick={() => isMobile && setMobileOpen(false)}
-              className={cn(
-                "group relative flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium transition-all duration-200",
-                isActive
-                  ? "bg-zinc-800/50 text-white"
-                  : "text-zinc-400 hover:bg-zinc-800/30 hover:text-white",
-                isMobile && "py-3.5" // Larger touch targets on mobile
+            <div key={sectionKey} className="mb-4">
+              {/* Section Label */}
+              {label && (isMobile || !collapsed) && (
+                <div className="px-3 mb-2">
+                  <span className="text-[10px] font-medium text-zinc-600 uppercase tracking-wider">
+                    {label}
+                  </span>
+                </div>
               )}
-            >
-              <Icon className="h-5 w-5 shrink-0" />
-              <AnimatePresence>
-                {(isMobile || !collapsed) && (
-                  <motion.span
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    className="truncate"
-                  >
-                    {item.name}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-              {isActive && (
-                <motion.div
-                  layoutId={isMobile ? "mobileActiveIndicator" : "activeIndicator"}
-                  className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-white"
-                />
+              {label && collapsed && !isMobile && (
+                <div className="h-px bg-zinc-800/50 mx-3 mb-2" />
               )}
-            </Link>
+              
+              {/* Section Items */}
+              <div className="space-y-1">
+                {items.map((item) => {
+                  const isActive = pathname === item.href || 
+                    (item.href !== "/dashboard" && pathname.startsWith(item.href));
+                  const Icon = item.icon;
+
+                  return (
+                    <Link
+                      key={item.name}
+                      href={item.href}
+                      onClick={() => isMobile && setMobileOpen(false)}
+                      className={cn(
+                        "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200",
+                        isActive
+                          ? "bg-gradient-to-r from-purple-500/10 to-transparent text-white border-l-2 border-purple-500"
+                          : "text-zinc-400 hover:bg-zinc-800/30 hover:text-white",
+                        isMobile && "py-3",
+                        collapsed && !isMobile && "justify-center px-2"
+                      )}
+                      title={collapsed && !isMobile ? item.name : undefined}
+                    >
+                      <Icon className={cn(
+                        "h-5 w-5 shrink-0",
+                        isActive ? "text-purple-400" : "text-zinc-500 group-hover:text-zinc-300"
+                      )} />
+                      <AnimatePresence>
+                        {(isMobile || !collapsed) && (
+                          <motion.span
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -10 }}
+                            className="truncate"
+                          >
+                            {item.name}
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
           );
         })}
       </nav>
@@ -209,7 +355,12 @@ export function Sidebar() {
         >
           <Menu className="h-5 w-5" />
         </button>
-        <span className="font-semibold text-white">AlokickFlow</span>
+        <div className="flex items-center gap-2">
+          <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-purple-500 to-purple-700 flex items-center justify-center">
+            <Workflow className="h-3.5 w-3.5 text-white" />
+          </div>
+          <span className="font-semibold text-white">AlokickFlow</span>
+        </div>
         <div className="flex items-center gap-2">
           <NotificationBell />
         </div>

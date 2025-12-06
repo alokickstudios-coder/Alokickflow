@@ -15,5 +15,3 @@ SELECT column_name, data_type, character_maximum_length
 FROM information_schema.columns
 WHERE table_name = 'deliveries' AND column_name = 'mime_type';
 
-
-

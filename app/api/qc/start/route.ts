@@ -346,17 +346,9 @@ export async function POST(request: NextRequest) {
               .eq("user_id", user.id)
               .maybeSingle();
 
-            if (dbTokens && dbTokens.access_token) {
-              const { decrypt } = await import("@/lib/utils/crypto");
-              try {
-                const decryptedAccessToken = dbTokens.access_token.includes(':') ? await decrypt(dbTokens.access_token) : dbTokens.access_token;
-                if (dbTokens.expires_at && new Date(dbTokens.expires_at) > new Date()) {
-                    accessToken = decryptedAccessToken;
-                    tokenExpiresAt = dbTokens.expires_at;
-                }
-              } catch(e) {
-                console.error("Failed to decrypt access token", e);
-              }
+            if (dbTokens && dbTokens.expires_at && new Date(dbTokens.expires_at) > new Date()) {
+              accessToken = dbTokens.access_token;
+              tokenExpiresAt = dbTokens.expires_at;
             }
           } else {
             // Get expiration from database if we have token from cookie
@@ -411,7 +403,12 @@ export async function POST(request: NextRequest) {
             .single();
 
           // Create QC job
+          // Store access token in result_json metadata temporarily for worker to use
           const qcType = featuresEnabled.premiumReport ? "full" : "basic";
+          const jobMetadata = accessToken ? {
+            google_access_token: accessToken, // Store token for worker to use
+            token_expires_at: tokenExpiresAt || new Date(Date.now() + 3600000).toISOString(),
+          } : {};
           
           const { data: qcJob, error: jobError } = await adminClient
             .from("qc_jobs")
@@ -425,6 +422,7 @@ export async function POST(request: NextRequest) {
               file_name: fileName,
               status: "queued",
               qc_type: qcType,
+              result_json: Object.keys(jobMetadata).length > 0 ? jobMetadata as any : null, // Temporarily store token here
             })
             .select()
             .single();

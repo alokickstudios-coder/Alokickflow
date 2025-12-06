@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Save, Building2, User, Bell, Shield, CreditCard, HardDrive, KeyRound } from "lucide-react";
@@ -22,7 +20,7 @@ import { PLANS, PlanSlug } from "@/config/subscriptionConfig";
 interface Organization {
   id: string;
   name: string;
-  subscription_tier: "free" | "pro" | "enterprise";
+  subscription_tier: "free" | "mid" | "enterprise";
 }
 
 interface Profile {
