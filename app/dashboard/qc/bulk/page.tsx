@@ -160,13 +160,14 @@ export default function BulkQCPage() {
       });
 
       // Process QC jobs (overwrite with more recent data)
-      qcJobs.forEach((job) => {
-        const existing = allResults.get(job.delivery_id) || {};
+      qcJobs.forEach((job: any) => {
+        const existing: Partial<QCJobResult> = allResults.get(job.delivery_id) || {};
         allResults.set(job.delivery_id || job.id, {
-          ...existing,
+          
           id: job.delivery_id || job.id,
-          file_name: job.file_name || existing.file_name,
-          original_file_name: job.file_name || existing.original_file_name,
+          file_name: job.file_name || existing.file_name || "",
+          storage_path: existing.storage_path || job.storage_path || "",
+          original_file_name: job.file_name || existing.original_file_name || "",
           status: job.status === "completed" ? "qc_passed" : 
                   job.status === "failed" ? "qc_failed" : job.status,
           drive_link: job.drive_link,
