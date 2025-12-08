@@ -101,7 +101,7 @@ export class GroqWhisperTranscriptionProvider implements TranscriptionProvider {
 
     // Prepare form data
     const formData = new FormData();
-    const blob = new Blob([fileBuffer], { type: mimeType });
+    const blob = new Blob([new Uint8Array(fileBuffer)], { type: mimeType });
     formData.append("file", blob, fileName);
     formData.append("model", GROQ_WHISPER_MODEL);
     formData.append("response_format", "verbose_json"); // Get detailed response with segments
