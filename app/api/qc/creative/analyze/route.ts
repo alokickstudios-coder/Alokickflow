@@ -248,19 +248,22 @@ export async function POST(request: NextRequest) {
       .eq("id", jobId);
 
     // Log the analysis (ignore errors)
-    await adminClient.from("creative_qc_audit_log").insert({
-      organization_id: organizationId,
-      job_id: jobId,
-      action: result.status === "completed" ? "completed" : "failed",
-      details: {
-        overallScore: result.overall_creative_score,
-        riskScore: result.overall_risk_score,
-        processingTimeMs: result.processing_time_ms,
-        error: result.error,
-      },
-      performed_by: user.id,
-    }).catch(() => {});
-
+    try {
+      await adminClient.from("creative_qc_audit_log").insert({
+        organization_id: organizationId,
+        job_id: jobId,
+        action: result.status === "completed" ? "completed" : "failed",
+        details: {
+          overallScore: result.overall_creative_score,
+          riskScore: result.overall_risk_score,
+          processingTimeMs: result.processing_time_ms,
+          error: result.error,
+        },
+        performed_by: user.id,
+      });
+    } catch {
+      // Ignore audit log errors
+    }
     console.log(`[Creative QC API] Analysis ${result.status} for job ${jobId}`);
 
     return NextResponse.json({
