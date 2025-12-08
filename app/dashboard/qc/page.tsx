@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -51,10 +49,13 @@ import {
   Loader2,
   AlertTriangle,
   Copy,
+  Sparkles,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { CreativeQCToggle } from "@/components/qc/creative-qc-toggle";
+import { CreativeQCScoreBadge, CreativeQCStatus } from "@/components/qc/creative-qc-results";
 
 interface QCJob {
   id: string;
@@ -70,6 +71,15 @@ interface QCJob {
   updated_at: string;
   progress?: number;
   project?: { id: string; code: string; name: string };
+  // Creative QC fields
+  creative_qc_status?: string;
+  creative_qc_overall_score?: number;
+  creative_qc_overall_risk_score?: number;
+  creative_qc_overall_brand_fit_score?: number;
+  creative_qc_summary?: string;
+  creative_qc_parameters?: Record<string, any>;
+  creative_qc_recommendations?: string[];
+  creative_qc_error?: string;
 }
 
 type SortField = "file_name" | "status" | "created_at" | "score";
@@ -105,7 +115,10 @@ export default function QCResultsPage() {
 
       const { data: jobsData, error: jobsError } = await supabase
         .from("qc_jobs")
-        .select(`*, project:projects(id, code, name)`)
+        .select(`
+          *,
+          project:projects(id, code, name)
+        `)
         .eq("organisation_id", profile.organization_id)
         .order("created_at", { ascending: false })
         .limit(500);
@@ -334,6 +347,9 @@ export default function QCResultsPage() {
         </div>
       </div>
 
+      {/* Creative QC Toggle - Enterprise Only */}
+      <CreativeQCToggle onSettingsChange={() => fetchQCJobs()} />
+
       {/* Filters */}
       <Card className="border-zinc-800 bg-zinc-900/50">
         <CardContent className="p-4">
@@ -395,6 +411,12 @@ export default function QCResultsPage() {
                     <TableHead className="text-zinc-300">Audio</TableHead>
                     <TableHead className="text-zinc-300">Loudness</TableHead>
                     <TableHead className="text-zinc-300">Lip-Sync</TableHead>
+                    <TableHead className="text-zinc-300">
+                      <div className="flex items-center gap-1">
+                        <Sparkles className="h-3 w-3 text-purple-400" />
+                        Creative QC
+                      </div>
+                    </TableHead>
                     <TableHead className="text-zinc-300">
                       <button onClick={() => handleSort("created_at")} className="flex items-center gap-1 hover:text-white">
                         Date
@@ -479,6 +501,13 @@ export default function QCResultsPage() {
                         <TableCell className="text-zinc-400 text-sm">{getQCValue(job, "audioMissing")}</TableCell>
                         <TableCell className="text-zinc-400 text-sm">{getQCValue(job, "loudness")}</TableCell>
                         <TableCell className="text-zinc-400 text-sm">{getQCValue(job, "lipSync")}</TableCell>
+                        <TableCell className="py-3">
+                          {job.creative_qc_status === "completed" ? (
+                            <CreativeQCScoreBadge score={job.creative_qc_overall_score} size="small" />
+                          ) : (
+                            <CreativeQCStatus status={job.creative_qc_status} error={job.creative_qc_error} />
+                          )}
+                        </TableCell>
                         <TableCell className="text-zinc-400 text-xs">{formatDate(job.created_at)}</TableCell>
                         <TableCell className="py-3 text-right">
                           <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

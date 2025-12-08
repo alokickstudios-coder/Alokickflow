@@ -57,6 +57,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
+import { CreativeQCToggle } from "@/components/qc/creative-qc-toggle";
 
 interface QCJobResult {
   id: string;
@@ -584,6 +585,8 @@ export default function BulkQCPage() {
           </div>
         )}
 
+        {/* Creative QC Toggle - Enterprise Only */}
+        <CreativeQCToggle />
         {/* Upload Section */}
         <div className="space-y-6">
           {isFree ? (

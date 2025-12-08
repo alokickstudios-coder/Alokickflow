@@ -25,6 +25,7 @@ export interface QCFeatures {
   videoGlitchQC: boolean;
   bgmQC: boolean;
   premiumReport: boolean;
+  creativeQC: boolean; // Enterprise-only Creative QC (SPI)
 }
 
 export interface QCResult {
@@ -38,6 +39,17 @@ export interface QCResult {
   videoGlitch?: VideoGlitchQCResult;
   bgm?: BGMQCResult;
   premiumReport?: PremiumQCReport;
+  // Creative QC (SPI) results - Enterprise only
+  creativeQC?: {
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    overallCreativeScore?: number;
+    overallRiskScore?: number;
+    overallBrandFitScore?: number;
+    parameters?: Record<string, any>;
+    summary?: string;
+    recommendations?: string[];
+    error?: string;
+  };
   errors: Array<{
     module: string;
     error: string;
@@ -444,11 +456,43 @@ export async function getEnabledQCFeatures(organisationId: string): Promise<QCFe
   const hasBasic = await hasFeature(organisationId, 'basic_qc');
   const hasFull = await hasFeature(organisationId, 'full_qc');
 
+  // Creative QC requires enterprise plan AND the feature to be enabled
+  const hasCreativeQC = await hasFeature(organisationId, 'creative_qc_spi');
+  const creativeQCEnabled = hasCreativeQC && await isCreativeQCToggleEnabled(organisationId);
+
   return {
     basicQC: hasBasic || hasFull,
     lipSyncQC: hasFull || await hasFeature(organisationId, 'lip_sync_qc'),
     videoGlitchQC: hasFull || await hasFeature(organisationId, 'video_glitch_qc'),
     bgmQC: hasFull || await hasFeature(organisationId, 'bgm_detection'),
     premiumReport: hasFull || await hasFeature(organisationId, 'premium_qc_report'),
+    creativeQC: creativeQCEnabled,
   };
+}
+
+/**
+ * Check if Creative QC toggle is enabled for an organization
+ */
+async function isCreativeQCToggleEnabled(organisationId: string): Promise<boolean> {
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!supabaseUrl || !supabaseServiceKey) return false;
+
+    const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+
+    const { data } = await adminClient
+      .from("organizations")
+      .select("creative_qc_settings")
+      .eq("id", organisationId)
+      .single();
+
+    return data?.creative_qc_settings?.enabled === true;
+  } catch {
+    return false;
+  }
 }

@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Check, Zap, Crown, CreditCard, ExternalLink, Loader2 } from "lucide-react";

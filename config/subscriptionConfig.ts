@@ -13,7 +13,8 @@ export type AddonSlug =
   | 'video_glitch_qc' 
   | 'bgm_detection' 
   | 'premium_qc_report' 
-  | 'multi_language_qc';
+  | 'multi_language_qc'
+  | 'creative_qc_spi';
 
 export type QCLevel = 'none' | 'basic' | 'full';
 export type FeatureKey = 
@@ -23,7 +24,8 @@ export type FeatureKey =
   | 'video_glitch_qc' 
   | 'bgm_detection' 
   | 'premium_qc_report' 
-  | 'multi_language_qc';
+  | 'multi_language_qc'
+  | 'creative_qc_spi';
 
 export type BillingCycle = 'monthly' | 'yearly';
 
@@ -94,7 +96,7 @@ export const PLANS: Record<PlanSlug, PlanConfig> = {
   enterprise: {
     slug: 'enterprise',
     name: 'Enterprise',
-    description: 'Full QC, all add-ons, unlimited usage',
+    description: 'Full QC, all add-ons, unlimited usage, Creative QC (SPI)',
     maxVendors: null, // Unlimited
     maxTeamMembers: null, // Unlimited
     includedSeriesPerBillingCycle: null, // Unlimited
@@ -105,6 +107,7 @@ export const PLANS: Record<PlanSlug, PlanConfig> = {
       'bgm_detection',
       'premium_qc_report',
       'multi_language_qc',
+      'creative_qc_spi',
     ],
     enterpriseCustomisation: true,
     pricing: {
@@ -174,6 +177,17 @@ export const ADDONS: Record<AddonSlug, AddonConfig> = {
     pricing: {
       monthly: 499,
       yearly: 4999,
+    },
+  },
+  creative_qc_spi: {
+    slug: 'creative_qc_spi',
+    name: 'Creative QC (SPI) – Beta',
+    description: 'AI-powered creative quality analysis: emotional impact, narrative structure, brand fit, and risk assessment',
+    type: 'qc_feature',
+    dependsOnPlan: ['enterprise'], // Enterprise only
+    pricing: {
+      monthly: 0, // Included in enterprise
+      yearly: 0,
     },
   },
 };

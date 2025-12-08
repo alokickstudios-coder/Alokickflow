@@ -361,15 +361,40 @@ export async function hasFeature(
     'bgm_detection',
     'premium_qc_report',
     'multi_language_qc',
+    'creative_qc_spi',
   ];
 
   if (addonFeatures.includes(feature)) {
-    // Check if addon is enabled
-    return subscription.enabled_addons.includes(feature as AddonSlug);
+    // First check if addon is enabled in subscription
+    if (subscription.enabled_addons.includes(feature as AddonSlug)) {
+      return true;
+    }
+    
+    // Also check feature_flags table for feature flags
+    const supabase = getAdminClient();
+    if (supabase) {
+      const { data: flag } = await supabase
+        .from('feature_flags')
+        .select('enabled')
+        .eq('organization_id', orgId)
+        .eq('feature_key', feature)
+        .single();
+      
+      if (flag?.enabled) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 
   return false;
 }
+
+/**
+ * Get organization subscription - exported for external use
+ */
+export { getOrganisationSubscription as getOrganizationSubscription };
 
 /**
  * Check if organisation can process a new series

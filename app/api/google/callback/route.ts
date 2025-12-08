@@ -150,13 +150,7 @@ export async function GET(request: NextRequest) {
         // Get the authenticated user from session
         const serverClient = await createServerClient();
         const { data: { user } } = await serverClient.auth.getUser();
-        const { encrypt } = await import("@/lib/utils/crypto");
         
-        const encryptedAccessToken = await encrypt(tokens.access_token);
-        const encryptedRefreshToken = tokens.refresh_token
-          ? await encrypt(tokens.refresh_token)
-          : null;
-
         if (user) {
           // Store with user_id
           const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString();
@@ -178,8 +172,8 @@ export async function GET(request: NextRequest) {
             .insert({
               id: user.id, // Use user.id as the primary key for user-specific tokens
               user_id: user.id,
-              access_token: encryptedAccessToken,
-              refresh_token: encryptedRefreshToken,
+              access_token: tokens.access_token,
+              refresh_token: tokens.refresh_token || null,
               expires_at: expiresAt,
               created_at: new Date().toISOString(),
             });
@@ -198,8 +192,8 @@ export async function GET(request: NextRequest) {
               
             await supabase.from("google_tokens").insert({
               id: "default",
-              access_token: encryptedAccessToken,
-              refresh_token: encryptedRefreshToken,
+              access_token: tokens.access_token,
+              refresh_token: tokens.refresh_token || null,
               expires_at: expiresAt,
               created_at: new Date().toISOString(),
             });
@@ -211,8 +205,8 @@ export async function GET(request: NextRequest) {
           console.log("[GoogleCallback] No user session, storing as default");
           await supabase.from("google_tokens").upsert({
             id: "default",
-            access_token: encryptedAccessToken,
-            refresh_token: encryptedRefreshToken,
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token || null,
             expires_at: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
             created_at: new Date().toISOString(),
           });
