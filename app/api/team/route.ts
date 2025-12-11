@@ -7,28 +7,15 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 
 export const dynamic = "force-dynamic";
 
-function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) return null;
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
     }
 
     const adminClient = getAdminClient();
@@ -36,18 +23,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    // Get user's organization
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile?.organization_id) {
-      return NextResponse.json({ members: [], invitations: [] });
-    }
-
-    const organizationId = profile.organization_id;
+    const { organizationId } = session.data!;
 
     // Fetch team members (excluding vendors)
     const { data: members, error: membersError } = await adminClient
@@ -86,11 +62,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
     }
 
     const adminClient = getAdminClient();
@@ -125,11 +99,9 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
     }
 
     const adminClient = getAdminClient();

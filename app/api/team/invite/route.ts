@@ -1,16 +1,17 @@
-import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 import crypto from "crypto";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const adminClient = getAdminClient();
+    if (!adminClient) {
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
     const body = await request.json();
@@ -20,35 +21,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // Get user's organization and check permissions
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("organization_id, role")
-      .eq("id", user.id)
-      .single();
+    const { organizationId, profile } = session.data!;
 
-    if (profileError || !profile || !profile.organization_id) {
-      return NextResponse.json({ error: "Organization not found" }, { status: 404 });
-    }
-
-    if (!["super_admin", "admin", "manager"].includes(profile.role)) {
+    if (!["super_admin", "admin", "manager"].includes(profile?.role || "")) {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
 
     // Get organization name
-    const { data: org } = await supabase
+    const { data: org } = await adminClient
       .from("organizations")
       .select("name")
-      .eq("id", profile.organization_id)
+      .eq("id", organizationId)
       .single();
     
     const organizationName = org?.name || "AlokickFlow Team";
 
     // Check for existing pending invitation (don't use .single() - might not exist)
-    const { data: existingInvites } = await supabase
+    const { data: existingInvites } = await adminClient
       .from("invitations")
       .select("id")
-      .eq("organization_id", profile.organization_id)
+      .eq("organization_id", organizationId)
       .eq("email", email)
       .eq("status", "pending")
       .limit(1);
@@ -61,8 +53,8 @@ export async function POST(request: Request) {
     const token = crypto.randomBytes(32).toString("hex");
 
     // Create invitation
-    const { error: insertError } = await supabase.from("invitations").insert({
-      organization_id: profile.organization_id,
+    const { error: insertError } = await adminClient.from("invitations").insert({
+      organization_id: organizationId,
       email,
       role,
       token,
