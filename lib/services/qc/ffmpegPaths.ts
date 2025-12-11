@@ -53,6 +53,7 @@ function systemBinaryExists(name: string): string | null {
 /**
  * Get the path to ffmpeg binary
  * Prefers system binary in development, falls back to static
+ * Returns null on Vercel if not available (graceful degradation)
  */
 export function getFFmpegPath(): string {
   // Load static paths lazily
@@ -75,6 +76,13 @@ export function getFFmpegPath(): string {
   const systemPath = systemBinaryExists('ffmpeg');
   if (systemPath) {
     return systemPath;
+  }
+
+  // On Vercel, throw a more descriptive error
+  if (process.env.VERCEL) {
+    throw new Error(
+      'FFmpeg not available on Vercel serverless. Video analysis requires FFmpeg which is not supported in serverless environments. Consider using a cloud video processing service or a dedicated worker server.'
+    );
   }
 
   throw new Error(
