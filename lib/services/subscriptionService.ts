@@ -345,6 +345,11 @@ export async function hasFeature(
 
   const planConfig = getPlanConfig(subscription.plan_slug);
 
+  // ENTERPRISE gets ALL features automatically
+  if (subscription.plan_slug === 'enterprise') {
+    return true;
+  }
+
   // Check QC level features
   if (feature === 'basic_qc') {
     return planConfig.qcLevel === 'basic' || planConfig.qcLevel === 'full';

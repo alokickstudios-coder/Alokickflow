@@ -306,21 +306,55 @@ export async function isCreativeQCAvailable(organizationId: string): Promise<{
     
     // Check if organization has enterprise plan
     const subscription = await getOrganizationSubscription(organizationId);
-    if (!subscription || subscription.plan_slug !== 'enterprise') {
+    
+    // Check subscription tier - accept both from subscription and fallback check
+    const isEnterprise = subscription?.plan_slug === 'enterprise';
+    
+    if (!subscription) {
+      // Try direct org check as fallback
+      const { createClient } = await import("@supabase/supabase-js");
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      
+      if (supabaseUrl && supabaseServiceKey) {
+        const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
+          auth: { autoRefreshToken: false, persistSession: false },
+        });
+        
+        const { data: org } = await adminClient
+          .from('organizations')
+          .select('subscription_tier')
+          .eq('id', organizationId)
+          .single();
+        
+        if (org?.subscription_tier === 'enterprise') {
+          // Enterprise tier in org - allow access
+          const providerCheck = isProviderConfigured();
+          if (!providerCheck.configured) {
+            return {
+              available: false,
+              reason: `Creative QC service not configured: ${providerCheck.missing.join(', ')}`,
+            };
+          }
+          return { available: true };
+        }
+      }
+      
+      return {
+        available: false,
+        reason: 'Creative QC (SPI) is available only for Enterprise plan subscribers.',
+      };
+    }
+    
+    if (!isEnterprise) {
       return {
         available: false,
         reason: 'Creative QC (SPI) is available only for Enterprise plan subscribers.',
       };
     }
 
-    // Check if creative_qc_spi feature is enabled
-    const hasCreativeQC = await hasFeature(organizationId, 'creative_qc_spi');
-    if (!hasCreativeQC) {
-      return {
-        available: false,
-        reason: 'Creative QC (SPI) beta is not enabled for this organization.',
-      };
-    }
+    // Enterprise automatically has all features - skip hasFeature check
+    // This ensures enterprise users always get access regardless of feature_flags table
 
     // Check if providers are configured
     const providerCheck = isProviderConfigured();
