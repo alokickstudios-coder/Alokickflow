@@ -1,0 +1,40 @@
+# Render.com Blueprint Configuration
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Main Web Application
+  - type: web
+    name: alokickflow
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      # Build-time variables (for NEXT_PUBLIC_ to work in client-side code)
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: NEXT_PUBLIC_APP_URL
+        value: https://alokickflow.onrender.com
+      # Runtime-only variables
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: NODE_ENV
+        value: production
+
+  # QC Worker (optional - deploy separately if needed)
+  # - type: web
+  #   name: alokickflow-qc-worker
+  #   runtime: docker
+  #   dockerfilePath: ./qc-worker/Dockerfile
+  #   dockerContext: ./qc-worker
+  #   plan: free
+  #   envVars:
+  #     - key: WORKER_SECRET
+  #       sync: false
+  #     - key: SUPABASE_URL
+  #       sync: false
+  #     - key: SUPABASE_SERVICE_KEY
+  #       sync: false
