@@ -40,6 +40,11 @@ interface QCJob {
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient();
+    const adminClient = getAdminClient();
+    
+    if (!adminClient) {
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+    }
     
     // Verify authentication
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -47,15 +52,51 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Get user's organization
-    const { data: profile } = await supabase
+    // Get user's organization using admin client for reliable access
+    let { data: profile } = await adminClient
       .from("profiles")
       .select("organization_id")
       .eq("id", user.id)
       .single();
 
+    // Auto-create organization if needed
     if (!profile?.organization_id) {
-      return NextResponse.json({ error: "No organization found" }, { status: 400 });
+      const { data: newOrg } = await adminClient
+        .from("organizations")
+        .insert({
+          name: `${user.email?.split("@")[0] || "User"}'s Workspace`,
+          subscription_tier: "enterprise",
+        })
+        .select()
+        .single();
+
+      if (newOrg) {
+        if (!profile) {
+          const { data: newProfile } = await adminClient
+            .from("profiles")
+            .insert({
+              id: user.id,
+              full_name: user.email?.split("@")[0] || "User",
+              role: "admin",
+              organization_id: newOrg.id,
+            })
+            .select()
+            .single();
+          profile = newProfile;
+        } else {
+          const { data: updatedProfile } = await adminClient
+            .from("profiles")
+            .update({ organization_id: newOrg.id })
+            .eq("id", user.id)
+            .select()
+            .single();
+          profile = updatedProfile;
+        }
+      }
+    }
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: "Failed to setup organization. Please refresh." }, { status: 500 });
     }
 
     const formData = await request.formData();
@@ -69,7 +110,7 @@ export async function POST(request: NextRequest) {
     // Get project ID - use provided one or get default
     let projectId = providedProjectId;
     if (!projectId) {
-      const { data: projects } = await supabase
+      const { data: projects } = await adminClient
         .from("projects")
         .select("id")
         .eq("organization_id", profile.organization_id)
@@ -77,14 +118,30 @@ export async function POST(request: NextRequest) {
 
       projectId = projects?.[0]?.id;
       if (!projectId) {
-        return NextResponse.json(
-          { error: "No project found. Please create a project first." },
-          { status: 400 }
-        );
+        // Auto-create a default project
+        const { data: newProject } = await adminClient
+          .from("projects")
+          .insert({
+            organization_id: profile.organization_id,
+            name: "Default Project",
+            code: "DEFAULT",
+            status: "active",
+          })
+          .select()
+          .single();
+
+        if (newProject) {
+          projectId = newProject.id;
+        } else {
+          return NextResponse.json(
+            { error: "Failed to create project. Please try again." },
+            { status: 500 }
+          );
+        }
       }
     } else {
       // Verify the provided project belongs to the organization
-      const { data: project, error: projectError } = await supabase
+      const { data: project, error: projectError } = await adminClient
         .from("projects")
         .select("id")
         .eq("id", projectId)
@@ -163,11 +220,11 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        const job = {
+        const job: QCJob = {
           fileId: delivery.id,
           fileName: fileName,
           filePath: storagePath,
-          projectId: projectId,
+          projectId: projectId as string, // projectId is guaranteed to be set at this point
           organizationId: profile.organization_id,
           userId: user.id,
         };
@@ -212,17 +269,8 @@ export async function POST(request: NextRequest) {
     const featuresEnabled = await getEnabledQCFeatures(profile.organization_id);
     const canProcess = await canProcessNewSeries(profile.organization_id);
 
-    logQCEvent.qcStarted(jobs[0]?.fileId || 'unknown', profile.organization_id, projectId);
+    logQCEvent.qcStarted(jobs[0]?.fileId || 'unknown', profile.organization_id, projectId || 'unknown');
     console.log(`[BulkQC] Queuing ${jobs.length} QC jobs for org ${profile.organization_id}`);
-
-    // Create QC job records in database BEFORE processing
-    const adminClient = getAdminClient();
-    if (!adminClient) {
-      return NextResponse.json(
-        { error: "Server configuration error" },
-        { status: 500 }
-      );
-    }
 
     // Create qc_jobs records for tracking
     const qcJobRecords = await Promise.all(

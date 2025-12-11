@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createClient as createAdminClient } from "@supabase/supabase-js";
 import { analyzeSubtitles, analyzeAudioData, runComprehensiveQC, AIQCAnalysis } from "@/lib/ai/gemini";
 import { writeFile, mkdir, unlink, readFile } from "fs/promises";
 import { join } from "path";
@@ -13,6 +14,16 @@ import { exec } from "child_process";
 import { promisify } from "util";
 
 const execAsync = promisify(exec);
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+function getAdminClient() {
+  if (!supabaseUrl || !supabaseServiceKey) return null;
+  return createAdminClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // 5 minutes
@@ -106,8 +117,12 @@ async function processFileInBackground(
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient();
+    const adminClient = getAdminClient();
+    
+    if (!adminClient) {
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+    }
 
-    // ... (auth, profile, and subscription checks remain the same) ...
     const {
       data: { user },
       error: authError,
@@ -116,16 +131,53 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: profile } = await supabase
+    // Use admin client for reliable profile access
+    let { data: profile } = await adminClient
       .from("profiles")
       .select("organization_id")
       .eq("id", user.id)
       .single();
 
+    // Auto-create organization if needed
+    if (!profile?.organization_id) {
+      const { data: newOrg } = await adminClient
+        .from("organizations")
+        .insert({
+          name: `${user.email?.split("@")[0] || "User"}'s Workspace`,
+          subscription_tier: "enterprise",
+        })
+        .select()
+        .single();
+
+      if (newOrg) {
+        if (!profile) {
+          const { data: newProfile } = await adminClient
+            .from("profiles")
+            .insert({
+              id: user.id,
+              full_name: user.email?.split("@")[0] || "User",
+              role: "admin",
+              organization_id: newOrg.id,
+            })
+            .select()
+            .single();
+          profile = newProfile;
+        } else {
+          const { data: updatedProfile } = await adminClient
+            .from("profiles")
+            .update({ organization_id: newOrg.id })
+            .eq("id", user.id)
+            .select()
+            .single();
+          profile = updatedProfile;
+        }
+      }
+    }
+
     if (!profile?.organization_id) {
       return NextResponse.json(
-        { error: "No organization found" },
-        { status: 400 }
+        { error: "Failed to setup organization" },
+        { status: 500 }
       );
     }
 
@@ -200,7 +252,7 @@ export async function POST(request: NextRequest) {
 
     let targetProjectId = projectId;
     if (!targetProjectId) {
-      const { data: projects } = await supabase
+      const { data: projects } = await adminClient
         .from("projects")
         .select("id")
         .eq("organization_id", profile.organization_id)
@@ -208,10 +260,26 @@ export async function POST(request: NextRequest) {
 
       targetProjectId = projects?.[0]?.id;
       if (!targetProjectId) {
-        return NextResponse.json(
-          { error: "No project found. Please create a project first." },
-          { status: 400 }
-        );
+        // Auto-create a default project
+        const { data: newProject } = await adminClient
+          .from("projects")
+          .insert({
+            organization_id: profile.organization_id,
+            name: "Default Project",
+            code: "DEFAULT",
+            status: "active",
+          })
+          .select()
+          .single();
+
+        if (newProject) {
+          targetProjectId = newProject.id;
+        } else {
+          return NextResponse.json(
+            { error: "Failed to create project. Please try again." },
+            { status: 500 }
+          );
+        }
       }
     }
 

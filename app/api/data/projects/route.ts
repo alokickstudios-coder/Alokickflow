@@ -8,50 +8,23 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 
 export const dynamic = "force-dynamic";
 
-function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) return null;
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
-
-async function getSessionData(supabase: any, adminClient: any) {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
-
-  const { data: profile } = await adminClient
-    .from("profiles")
-    .select("organization_id, role")
-    .eq("id", user.id)
-    .single();
-
-  if (!profile?.organization_id) return null;
-
-  return { user, profile, organizationId: profile.organization_id };
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
+
     const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    const session = await getSessionData(supabase, adminClient);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { organizationId } = session;
+    const { organizationId } = session.data!;
 
     // Fetch projects
     const { data: projects, error } = await adminClient
@@ -144,15 +117,14 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
+
     const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
-    }
-
-    const session = await getSessionData(supabase, adminClient);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
@@ -165,7 +137,7 @@ export async function POST(request: NextRequest) {
     const { data: newProject, error } = await adminClient
       .from("projects")
       .insert({
-        organization_id: session.organizationId,
+        organization_id: session.data!.organizationId,
         code: code.toUpperCase().trim(),
         name: name.trim(),
         naming_convention_regex: "^([A-Z0-9_]+)[-_]?EP[_-]?(\\d{1,4})[_-]?([A-Za-z]+)[_-]?(.+)$",
@@ -189,7 +161,7 @@ export async function POST(request: NextRequest) {
           project_id: newProject.id,
           vendor_id: vendorId,
           vendor_name: vendor?.full_name || vendor?.company_name || null,
-          organization_id: session.organizationId,
+          organization_id: session.data!.organizationId,
         });
     }
 
@@ -202,15 +174,14 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
+
     const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
-    }
-
-    const session = await getSessionData(supabase, adminClient);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
@@ -224,7 +195,7 @@ export async function PATCH(request: NextRequest) {
       .from("projects")
       .update({ status })
       .eq("id", id)
-      .eq("organization_id", session.organizationId)
+      .eq("organization_id", session.data!.organizationId)
       .select()
       .single();
 
@@ -238,15 +209,14 @@ export async function PATCH(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
+
     const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
-    }
-
-    const session = await getSessionData(supabase, adminClient);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -266,7 +236,7 @@ export async function DELETE(request: NextRequest) {
       .from("projects")
       .delete()
       .eq("id", id)
-      .eq("organization_id", session.organizationId);
+      .eq("organization_id", session.data!.organizationId);
 
     if (error) throw error;
 

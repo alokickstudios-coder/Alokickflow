@@ -152,10 +152,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Get or validate project
+    // Get or validate project - use admin client for reliable access
     let projectId = body.projectId;
     if (!projectId) {
-      const { data: projects } = await supabase
+      const { data: projects } = await adminClient
         .from("projects")
         .select("id")
         .eq("organization_id", orgId)
@@ -163,14 +163,30 @@ export async function POST(request: NextRequest) {
 
       projectId = projects?.[0]?.id;
       if (!projectId) {
-        return NextResponse.json(
-          { error: "No project found. Please create a project first." },
-          { status: 400 }
-        );
+        // Auto-create a default project
+        const { data: newProject, error: createError } = await adminClient
+          .from("projects")
+          .insert({
+            organization_id: orgId,
+            name: "Default Project",
+            code: "DEFAULT",
+            status: "active",
+          })
+          .select()
+          .single();
+
+        if (createError || !newProject) {
+          console.error("Failed to create default project:", createError);
+          return NextResponse.json(
+            { error: "Failed to setup project. Please try again." },
+            { status: 500 }
+          );
+        }
+        projectId = newProject.id;
       }
     } else {
-      // Verify project belongs to org
-      const { data: project } = await supabase
+      // Verify project belongs to org using admin client
+      const { data: project } = await adminClient
         .from("projects")
         .select("id")
         .eq("id", projectId)
