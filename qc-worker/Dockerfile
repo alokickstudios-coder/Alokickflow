@@ -1,7 +1,7 @@
 # AlokickFlow QC Worker
-# Dockerfile for Railway deployment with FFmpeg
+# Dockerfile for Render/Railway deployment with FFmpeg
 
-FROM node:18-slim
+FROM node:20-slim
 
 # Install FFmpeg
 RUN apt-get update && apt-get install -y \
