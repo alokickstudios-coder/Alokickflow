@@ -482,12 +482,14 @@ async function resolveDriveFile(
   const arrayBuffer = await response.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
-  // Save to temp location
+  // Save to temp location (use /tmp on Vercel, local tmp otherwise)
   const { writeFile, mkdir } = await import("fs/promises");
   const { join } = await import("path");
   const { existsSync } = await import("fs");
 
-  const tempDir = join(process.cwd(), "tmp", "qc-processing");
+  // On Vercel, use /tmp which is writable; locally use project tmp
+  const isVercel = !!process.env.VERCEL;
+  const tempDir = isVercel ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
   }
@@ -528,12 +530,14 @@ async function resolveStorageFile(
   const arrayBuffer = await data.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
-  // Save to temp location
+  // Save to temp location (use /tmp on Vercel, local tmp otherwise)
   const { writeFile, mkdir } = await import("fs/promises");
   const { join } = await import("path");
   const { existsSync } = await import("fs");
 
-  const tempDir = join(process.cwd(), "tmp", "qc-processing");
+  // On Vercel, use /tmp which is writable; locally use project tmp
+  const isVercel = !!process.env.VERCEL;
+  const tempDir = isVercel ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
   }
