@@ -10,7 +10,6 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DriveConnect } from "@/components/drive/drive-connect";
 import { SubscriptionCard } from "@/components/billing/subscription-card";
-import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
@@ -27,6 +26,7 @@ interface Profile {
   id: string;
   full_name: string | null;
   avatar_url: string | null;
+  role: string;
 }
 
 function SubscriptionManagementSection() {
@@ -173,37 +173,37 @@ export default function SettingsPage() {
     fetchGoogleSettings();
   }, []);
 
+  // Fetch data via API routes instead of direct Supabase calls
   const fetchData = async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      // Fetch profile
-      const { data: profileData } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", user.id)
-        .single();
-
-      if (profileData) {
-        setProfile(profileData);
-        setFullName(profileData.full_name || "");
-
-        // Fetch organization
-        const { data: orgData } = await supabase
-          .from("organizations")
-          .select("*")
-          .eq("id", profileData.organization_id)
-          .single();
-
-        if (orgData) {
-          setOrganization(orgData);
-          setOrgName(orgData.name);
-        }
+      
+      // Fetch profile and organization via API
+      const response = await fetch("/api/settings/profile");
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to fetch settings");
       }
-    } catch (error) {
+      
+      const data = await response.json();
+      
+      if (data.profile) {
+        setProfile(data.profile);
+        setFullName(data.profile.full_name || "");
+      }
+      
+      if (data.organization) {
+        setOrganization(data.organization);
+        setOrgName(data.organization.name || "");
+      }
+    } catch (error: any) {
       console.error("Error fetching settings:", error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to load settings",
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
@@ -269,19 +269,25 @@ export default function SettingsPage() {
     }
   };
 
+  // Save organization via API route
   const handleSaveOrganization = async () => {
     if (!organization) return;
 
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from("organizations")
-        .update({ name: orgName })
-        .eq("id", organization.id);
+      const response = await fetch("/api/settings/organization", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: orgName }),
+      });
 
-      if (error) throw error;
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update organization");
+      }
 
-      setOrganization({ ...organization, name: orgName });
+      setOrganization(data.organization);
       toast({
         title: "Organization updated",
         description: "Your organization name has been saved.",
@@ -298,19 +304,25 @@ export default function SettingsPage() {
     }
   };
 
+  // Save profile via API route
   const handleSaveProfile = async () => {
     if (!profile) return;
 
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({ full_name: fullName })
-        .eq("id", profile.id);
+      const response = await fetch("/api/settings/profile", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full_name: fullName }),
+      });
 
-      if (error) throw error;
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update profile");
+      }
 
-      setProfile({ ...profile, full_name: fullName });
+      setProfile(data.profile);
       toast({
         title: "Profile updated",
         description: "Your profile has been saved.",
@@ -487,7 +499,9 @@ export default function SettingsPage() {
                     <p className="text-xs text-zinc-500">
                       Redirect URI (configure in Google Cloud Console):{" "}
                       <span className="font-mono">
-                        {`${window.location.origin}/api/google/callback`}
+                        {typeof window !== "undefined"
+                          ? `${window.location.origin}/api/google/callback`
+                          : "/api/google/callback"}
                       </span>
                     </p>
                     <Button onClick={handleSaveGoogle} disabled={googleSaving}>
@@ -556,4 +570,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-
