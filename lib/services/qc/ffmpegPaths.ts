@@ -78,10 +78,10 @@ export function getFFmpegPath(): string {
     return systemPath;
   }
 
-  // On Vercel, throw a more descriptive error
-  if (process.env.VERCEL) {
+  // On cloud/serverless, throw a more descriptive error
+  if (process.env.VERCEL || process.env.RENDER || process.env.RAILWAY_ENVIRONMENT) {
     throw new Error(
-      'FFmpeg not available on Vercel serverless. Video analysis requires FFmpeg which is not supported in serverless environments. Consider using a cloud video processing service or a dedicated worker server.'
+      'FFmpeg not available in serverless environment. Video analysis requires FFmpeg which is not supported in serverless environments. Configure QC_WORKER_URL and QC_WORKER_SECRET to use the dedicated QC Worker.'
     );
   }
 

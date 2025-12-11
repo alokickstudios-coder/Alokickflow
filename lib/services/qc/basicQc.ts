@@ -743,9 +743,9 @@ async function runBasicQCViaWorker(fileInfo: FileInfo): Promise<BasicQCResult> {
  * This allows QC to "complete" without full analysis
  */
 function createMinimalQCResult(): BasicQCResult {
-  const isVercel = !!process.env.VERCEL;
-  const skipMessage = isVercel 
-    ? 'FFmpeg not available on Vercel serverless. Full video analysis requires a server with FFmpeg installed.'
+  const isCloud = !!process.env.VERCEL || !!process.env.RENDER || !!process.env.RAILWAY_ENVIRONMENT;
+  const skipMessage = isCloud 
+    ? 'FFmpeg not available in serverless environment. Full video analysis requires QC Worker to be configured.'
     : 'FFmpeg not found. Please install FFmpeg for full video analysis.';
 
   return {

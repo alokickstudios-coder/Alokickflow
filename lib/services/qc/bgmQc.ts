@@ -321,9 +321,9 @@ async function downloadToTemp(url: string): Promise<string> {
   const fs = await import('fs/promises');
   const path = await import('path');
   
-  // On Vercel, use /tmp which is writable; locally use project tmp
-  const isVercel = !!process.env.VERCEL;
-  const tempDir = isVercel ? '/tmp/qc-downloads' : path.join(process.cwd(), 'tmp', 'qc-downloads');
+  // On serverless/cloud (Vercel, Render), use /tmp which is writable; locally use project tmp
+  const isCloud = !!process.env.VERCEL || !!process.env.RENDER || !!process.env.RAILWAY_ENVIRONMENT;
+  const tempDir = isCloud ? '/tmp/qc-downloads' : path.join(process.cwd(), 'tmp', 'qc-downloads');
   await fs.mkdir(tempDir, { recursive: true });
   
   const response = await fetch(url);

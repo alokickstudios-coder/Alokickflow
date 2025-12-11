@@ -487,9 +487,9 @@ async function resolveDriveFile(
   const { join } = await import("path");
   const { existsSync } = await import("fs");
 
-  // On Vercel, use /tmp which is writable; locally use project tmp
-  const isVercel = !!process.env.VERCEL;
-  const tempDir = isVercel ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
+  // On serverless/cloud (Vercel, Render), use /tmp which is writable; locally use project tmp
+  const isCloud = !!process.env.VERCEL || !!process.env.RENDER || !!process.env.RAILWAY_ENVIRONMENT;
+  const tempDir = isCloud ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
   }
@@ -535,9 +535,9 @@ async function resolveStorageFile(
   const { join } = await import("path");
   const { existsSync } = await import("fs");
 
-  // On Vercel, use /tmp which is writable; locally use project tmp
-  const isVercel = !!process.env.VERCEL;
-  const tempDir = isVercel ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
+  // On serverless/cloud (Vercel, Render), use /tmp which is writable; locally use project tmp
+  const isCloud = !!process.env.VERCEL || !!process.env.RENDER || !!process.env.RAILWAY_ENVIRONMENT;
+  const tempDir = isCloud ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
   }
