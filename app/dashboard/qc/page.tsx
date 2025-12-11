@@ -95,6 +95,7 @@ export default function QCResultsPage() {
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
   const [actionLoading, setActionLoading] = useState<Set<string>>(new Set());
 
   const fetchQCJobs = useCallback(async () => {
@@ -280,6 +281,42 @@ export default function QCResultsPage() {
     passed: jobs.filter((j) => (j.result_json?.status || j.result?.status) === "passed").length,
     failed: jobs.filter((j) => j.status === "failed" || (j.result_json?.status || j.result?.status) === "failed").length,
     processing: jobs.filter((j) => isProcessing(j.status)).length,
+    needsReprocess: jobs.filter((j) => {
+      if (j.status === "failed") return true;
+      const result = j.result_json || j.result;
+      if (!result) return false;
+      return (
+        result.basicQC?.audioMissing?.error?.includes("FFmpeg") ||
+        result.basicQC?.loudness?.message?.includes("FFmpeg") ||
+        result.basicQC?.loudness?.lufs === null
+      );
+    }).length,
+  };
+
+  const handleReprocessAll = async () => {
+    setReprocessing(true);
+    try {
+      const response = await fetch("/api/qc/reprocess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to reprocess");
+      toast({
+        title: "Reprocessing started",
+        description: `${data.requeued} job(s) queued for reprocessing`,
+      });
+      setTimeout(fetchQCJobs, 2000); // Refresh after delay
+    } catch (error: any) {
+      toast({
+        title: "Reprocess failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setReprocessing(false);
+    }
   };
 
   const uniqueProjects = [...new Map(filteredAndSorted.filter((j) => j.project?.id).map((j) => [j.project!.id, j.project!])).values()];
@@ -306,6 +343,12 @@ export default function QCResultsPage() {
             <span className="text-zinc-600">•</span>
             <span className="text-zinc-400">{stats.total} total</span>
           </div>
+          {stats.needsReprocess > 0 && (
+            <Button variant="outline" onClick={handleReprocessAll} disabled={reprocessing} className="border-orange-500/50 text-orange-400 hover:bg-orange-500/10">
+              <RefreshCw className={cn("h-4 w-4 mr-2", reprocessing && "animate-spin")} />
+              {reprocessing ? "Reprocessing..." : `Reprocess (${stats.needsReprocess})`}
+            </Button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button disabled={exporting || uniqueProjects.length === 0} className="bg-purple-600 hover:bg-purple-700">
