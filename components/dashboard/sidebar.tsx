@@ -24,6 +24,10 @@ import {
   FileVideo,
   ClipboardCheck,
   GitBranch,
+  Brain,
+  Shield,
+  Sparkles,
+  Layers,
 } from "lucide-react";
 import { UserMenu } from "./user-menu";
 import { NotificationBell } from "./notification-bell";
@@ -102,6 +106,29 @@ const navigation = [
     description: "Team members"
   },
   
+  // AI & Intelligence
+  { 
+    name: "AI Hub", 
+    href: "/dashboard/ai", 
+    icon: Brain,
+    section: "ai",
+    description: "AI-powered insights"
+  },
+  { 
+    name: "Compliance", 
+    href: "/dashboard/ai/compliance", 
+    icon: Shield,
+    section: "ai",
+    description: "Platform compliance"
+  },
+  { 
+    name: "Visual Diff", 
+    href: "/dashboard/ai/diff", 
+    icon: Layers,
+    section: "ai",
+    description: "Frame comparison"
+  },
+  
   // Analytics & Admin
   { 
     name: "Analytics", 
@@ -132,6 +159,7 @@ const sectionLabels: Record<string, string> = {
   production: "Production",
   quality: "Quality",
   team: "Team",
+  ai: "AI Intelligence",
   admin: "Admin",
 };
 
@@ -185,7 +213,7 @@ export function Sidebar() {
     return acc;
   }, {} as Record<string, typeof navigation>);
 
-  const sectionOrder = ["overview", "workflow", "production", "quality", "team", "admin"];
+  const sectionOrder = ["overview", "workflow", "production", "quality", "team", "ai", "admin"];
 
   const NavContent = ({ isMobile = false }: { isMobile?: boolean }) => (
     <>

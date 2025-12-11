@@ -2,8 +2,9 @@
 
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
+import { AICommandCenter, AICommandTrigger } from "@/components/ai/command-center";
 
 export default function DashboardLayout({
   children,
@@ -11,6 +12,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [aiCommandOpen, setAiCommandOpen] = useState(false);
 
   useEffect(() => {
     // Check initial state
@@ -32,6 +34,22 @@ export default function DashboardLayout({
     };
   }, []);
 
+  // Keyboard shortcut for AI Command Center (⌘K / Ctrl+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setAiCommandOpen(prev => !prev);
+      }
+      if (e.key === "Escape" && aiCommandOpen) {
+        setAiCommandOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [aiCommandOpen]);
+
   return (
     <ErrorBoundary>
       <div className="flex min-h-screen bg-zinc-950">
@@ -49,6 +67,15 @@ export default function DashboardLayout({
             {children}
           </div>
         </main>
+
+        {/* AI Command Center */}
+        <AICommandCenter 
+          isOpen={aiCommandOpen} 
+          onClose={() => setAiCommandOpen(false)} 
+        />
+        
+        {/* AI Floating Button */}
+        <AICommandTrigger onClick={() => setAiCommandOpen(true)} />
       </div>
     </ErrorBoundary>
   );
