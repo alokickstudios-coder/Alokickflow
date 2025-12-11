@@ -8,8 +8,13 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
+import { getFFmpegPath, getFFprobePath } from './ffmpegPaths';
 
 const execAsync = promisify(exec);
+
+// Get binary paths (works on both local and Vercel)
+const FFMPEG = getFFmpegPath();
+const FFPROBE = getFFprobePath();
 
 export interface BGMQCResult {
   status: 'passed' | 'failed' | 'warning';
@@ -159,7 +164,7 @@ async function getAudioMetadata(filePath: string): Promise<{
 }> {
   try {
     const { stdout } = await execAsync(
-      `ffprobe -v error -show_entries stream=channels,sample_rate -show_entries format=duration -of json "${filePath}"`
+      `"${FFPROBE}" -v error -show_entries stream=channels,sample_rate -show_entries format=duration -of json "${filePath}"`
     );
 
     const data = JSON.parse(stdout);
@@ -191,7 +196,7 @@ async function analyzeAudioSpectrum(filePath: string): Promise<{
     // Use ffmpeg to analyze frequency bands
     // Low: 20-250Hz, Mid: 250-4000Hz, High: 4000-20000Hz
     const { stdout } = await execAsync(
-      `ffmpeg -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -30`
+      `"${FFMPEG}" -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -30`
     );
 
     // Parse RMS and peak levels
@@ -279,7 +284,7 @@ async function analyzeBGMLevels(filePath: string): Promise<{
 }> {
   try {
     const { stdout } = await execAsync(
-      `ffmpeg -i "${filePath}" -af "volumedetect" -f null - 2>&1 | grep -E "mean_volume|max_volume"`
+      `"${FFMPEG}" -i "${filePath}" -af "volumedetect" -f null - 2>&1 | grep -E "mean_volume|max_volume"`
     );
 
     const meanMatch = stdout.match(/mean_volume:\s*([-\d.]+)\s*dB/);

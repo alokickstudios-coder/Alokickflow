@@ -8,8 +8,13 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
+import { getFFmpegPath, getFFprobePath } from './ffmpegPaths';
 
 const execAsync = promisify(exec);
+
+// Get binary paths (works on both local and Vercel)
+const FFMPEG = getFFmpegPath();
+const FFPROBE = getFFprobePath();
 
 export interface VideoGlitchQCResult {
   status: 'passed' | 'failed' | 'warning';
@@ -151,7 +156,7 @@ async function detectBlackFrames(filePath: string): Promise<{
 }> {
   try {
     const { stderr } = await execAsync(
-      `ffmpeg -i "${filePath}" -vf blackdetect=d=0.1:pix_th=0.1 -f null - 2>&1`
+      `"${FFMPEG}" -i "${filePath}" -vf blackdetect=d=0.1:pix_th=0.1 -f null - 2>&1`
     );
 
     const segments: Array<{ start: number; end: number; duration: number }> = [];
@@ -206,7 +211,7 @@ async function detectFrozenFrames(filePath: string): Promise<{
 }> {
   try {
     const { stderr } = await execAsync(
-      `ffmpeg -i "${filePath}" -vf freezedetect=n=-50dB:d=1 -f null - 2>&1`
+      `"${FFMPEG}" -i "${filePath}" -vf freezedetect=n=-50dB:d=1 -f null - 2>&1`
     );
 
     const segments: Array<{ start: number; end: number; duration: number }> = [];
@@ -261,7 +266,7 @@ async function analyzeFrameRate(filePath: string): Promise<{
 }> {
   try {
     const { stdout } = await execAsync(
-      `ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate,avg_frame_rate -of json "${filePath}"`
+      `"${FFPROBE}" -v error -select_streams v:0 -show_entries stream=r_frame_rate,avg_frame_rate -of json "${filePath}"`
     );
 
     const data = JSON.parse(stdout);

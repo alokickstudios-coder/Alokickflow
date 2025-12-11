@@ -18,8 +18,13 @@ import { promisify } from 'util';
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { getTranscript, TranscriptResult } from './transcription';
+import { getFFmpegPath, getFFprobePath } from './ffmpegPaths';
 
 const execAsync = promisify(exec);
+
+// Get binary paths (works on both local and Vercel)
+const FFMPEG = getFFmpegPath();
+const FFPROBE = getFFprobePath();
 
 export interface BasicQCResult {
   audioMissing: {
@@ -149,7 +154,7 @@ export async function runBasicQC(
 async function checkAudioMissing(filePath: string): Promise<BasicQCResult['audioMissing']> {
   try {
     const { stdout } = await execAsync(
-      `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${filePath}"`
+      `"${FFPROBE}" -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${filePath}"`
     );
 
     if (!stdout.trim() || !stdout.includes('audio')) {
@@ -175,7 +180,7 @@ async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness'
   try {
     // Use ffmpeg loudnorm filter to get EBU R128 measurements
     const { stdout } = await execAsync(
-      `ffmpeg -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`
+      `"${FFMPEG}" -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`
     );
 
     // Parse JSON output
@@ -243,7 +248,7 @@ async function checkSilence(filePath: string): Promise<BasicQCResult['silence']>
   try {
     // Use ffmpeg silencedetect filter
     const { stderr } = await execAsync(
-      `ffmpeg -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`
+      `"${FFMPEG}" -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`
     );
 
     const segments: Array<{ start: number; end: number; duration: number }> = [];
@@ -461,7 +466,7 @@ async function checkMissingBGM(
     // Analyze audio spectrum to detect BGM presence
     // Use ffmpeg to analyze frequency bands
     const { stdout } = await execAsync(
-      `ffmpeg -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -20`
+      `"${FFMPEG}" -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -20`
     );
 
     // Check audio channels (stereo typically has BGM)
@@ -517,7 +522,7 @@ async function checkVisualQuality(filePath: string): Promise<BasicQCResult['visu
 
   try {
     const { stdout } = await execAsync(
-      `ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate -of json "${filePath}"`
+      `"${FFPROBE}" -v error -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate -of json "${filePath}"`
     );
 
     const data = JSON.parse(stdout);
@@ -592,7 +597,7 @@ async function checkVisualQuality(filePath: string): Promise<BasicQCResult['visu
 async function getMetadata(filePath: string): Promise<BasicQCResult['metadata']> {
   try {
     const { stdout } = await execAsync(
-      `ffprobe -v error -show_entries format=duration -show_entries stream=codec_name,channels,sample_rate -of json "${filePath}"`
+      `"${FFPROBE}" -v error -show_entries format=duration -show_entries stream=codec_name,channels,sample_rate -of json "${filePath}"`
     );
 
     const data = JSON.parse(stdout);
