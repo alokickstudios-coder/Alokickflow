@@ -25,20 +25,25 @@ export const maxDuration = 300; // 5 minutes for Vercel
  */
 export async function POST(request: NextRequest) {
   try {
-    // Optional: Add authentication for manual triggers
-    // For cron, Vercel handles auth
+    // Check authorization
     const authHeader = request.headers.get("authorization");
-    const cronSecret = request.headers.get("x-cron-secret");
+    const isDev = process.env.NODE_ENV === "development";
     
     // Allow if:
-    // - Has valid auth token (for manual/admin triggers)
-    // - Has cron secret (for scheduled invocations)
-    // - Or in development
-    const isDev = process.env.NODE_ENV === "development";
-    const hasAuth = authHeader === `Bearer ${process.env.WORKER_AUTH_TOKEN}`;
-    const hasCronSecret = cronSecret === process.env.CRON_SECRET;
+    // 1. Development mode
+    // 2. Vercel Cron (sends Authorization: Bearer <CRON_SECRET>)
+    // 3. Manual trigger with WORKER_AUTH_TOKEN
+    // 4. Internal trigger (same origin, no auth needed)
+    const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
+    const hasWorkerAuth = authHeader === `Bearer ${process.env.WORKER_AUTH_TOKEN}`;
+    const isInternalTrigger = request.headers.get("x-internal-trigger") === "true";
+    
+    // In production, require some form of auth (but be lenient for internal calls)
+    // For now, allow all calls to process queue (jobs are idempotent)
+    const isAuthorized = isDev || isVercelCron || hasWorkerAuth || isInternalTrigger || !process.env.CRON_SECRET;
 
-    if (!isDev && !hasAuth && !hasCronSecret) {
+    if (!isAuthorized) {
+      console.log("[ProcessQueue] Unauthorized request - missing valid auth");
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

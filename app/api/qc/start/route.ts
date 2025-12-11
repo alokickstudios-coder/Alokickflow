@@ -458,19 +458,26 @@ export async function POST(request: NextRequest) {
     }
 
     // Trigger worker processing (non-blocking)
-    // In production, this could be a webhook or queue trigger
-    // For now, we'll let the worker pick it up via polling
+    // This fires off a request to process the queue immediately
     try {
-      // Optionally trigger worker immediately (non-blocking)
-      fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/qc/process-queue`, {
+      const baseUrl = process.env.VERCEL_URL 
+        ? `https://${process.env.VERCEL_URL}` 
+        : process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      
+      console.log(`[QCStart] Triggering worker at ${baseUrl}/api/qc/process-queue`);
+      
+      fetch(`${baseUrl}/api/qc/process-queue`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-internal-trigger": "true",
+        },
         body: JSON.stringify({ limit: 5 }),
-      }).catch(() => {
-        // Ignore errors - worker will pick up jobs via polling
+      }).catch((err) => {
+        console.log("[QCStart] Worker trigger failed (will rely on cron):", err.message);
       });
-    } catch {
-      // Ignore - worker will process via scheduled invocation
+    } catch (err: any) {
+      console.log("[QCStart] Worker trigger error (will rely on cron):", err.message);
     }
 
     // Always return jobs array (even if empty) and errors array (even if empty)
