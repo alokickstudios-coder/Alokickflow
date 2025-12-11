@@ -40,7 +40,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -132,19 +131,17 @@ export default function VendorsPage() {
   const fetchVendors = async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      
+      // Get session/organization via API
+      const sessionRes = await fetch("/api/auth/session");
+      if (!sessionRes.ok) return;
+      
+      const session = await sessionRes.json();
+      if (!session.authenticated || !session.organization?.id) return;
+      
+      setOrganizationId(session.organization.id);
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id")
-        .eq("id", user.id)
-        .single();
-
-      if (!profile?.organization_id) return;
-      setOrganizationId(profile.organization_id);
-
-      const response = await fetch(`/api/vendors/create?organizationId=${profile.organization_id}`);
+      const response = await fetch(`/api/vendors/create?organizationId=${session.organization.id}`);
       if (response.ok) {
         const data = await response.json();
         setVendors(data.vendors || []);

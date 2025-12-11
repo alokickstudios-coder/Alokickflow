@@ -54,7 +54,6 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SearchInput } from "@/components/ui/search-input";
-import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -154,46 +153,27 @@ export default function TeamPage() {
 
   const fetchTeamMembers = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      // Use API route instead of direct Supabase calls
+      const response = await fetch("/api/team");
+      
+      if (!response.ok) {
+        throw new Error("Failed to fetch team data");
+      }
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id, role")
-        .eq("id", user.id)
-        .single();
+      const data = await response.json();
 
-      if (!profile?.organization_id) return;
-
-      // Fetch Members
-      const { data: membersData } = await supabase
-        .from("profiles")
-        .select("id, full_name, role, created_at")
-        .eq("organization_id", profile.organization_id)
-        .neq("role", "vendor")
-        .order("created_at", { ascending: false });
-
-      if (membersData) {
-        // Get emails from auth (in production, you'd use a server function or join if possible)
-        // Here we mock it as before, but ideally this comes from a secure view or function
-        const membersWithEmail = membersData.map((m) => ({
+      if (data.members) {
+        // Add placeholder emails for display
+        const membersWithEmail = data.members.map((m: any) => ({
           ...m,
-          email: `user-${m.id.slice(0, 8)}@example.com`, // Placeholder until we have real email linking
+          email: `user-${m.id.slice(0, 8)}@example.com`,
         }));
         setMembers(membersWithEmail as TeamMember[]);
         setFilteredMembers(membersWithEmail as TeamMember[]);
       }
 
-      // Fetch Invitations
-      const { data: invitationsData } = await supabase
-        .from("invitations")
-        .select("*")
-        .eq("organization_id", profile.organization_id)
-        .eq("status", "pending")
-        .order("created_at", { ascending: false });
-      
-      if (invitationsData) {
-        setInvitations(invitationsData as Invitation[]);
+      if (data.invitations) {
+        setInvitations(data.invitations as Invitation[]);
       }
 
     } catch (error) {
@@ -243,12 +223,14 @@ export default function TeamPage() {
     if (!confirm("Are you sure you want to revoke this invitation?")) return;
 
     try {
-        const { error } = await supabase
-            .from("invitations")
-            .delete()
-            .eq("id", id);
+        const response = await fetch(`/api/team?invitationId=${id}`, {
+            method: "DELETE",
+        });
 
-        if (error) throw error;
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || "Failed to revoke invitation");
+        }
 
         setInvitations(prev => prev.filter(i => i.id !== id));
 
@@ -268,12 +250,16 @@ export default function TeamPage() {
 
   const handleChangeRole = async (memberId: string, newRole: TeamRole) => {
     try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({ role: newRole })
-        .eq("id", memberId);
+      const response = await fetch("/api/team", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memberId, role: newRole }),
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to update role");
+      }
 
       setMembers((prev) =>
         prev.map((m) => (m.id === memberId ? { ...m, role: newRole } : m))
@@ -297,13 +283,14 @@ export default function TeamPage() {
     if (!confirm("Are you sure you want to remove this team member?")) return;
 
     try {
-      // In production, you'd also remove from auth.users or disable access
-      const { error } = await supabase
-        .from("profiles")
-        .delete()
-        .eq("id", memberId);
+      const response = await fetch(`/api/team?memberId=${memberId}`, {
+        method: "DELETE",
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to remove member");
+      }
 
       setMembers((prev) => prev.filter((m) => m.id !== memberId));
 
