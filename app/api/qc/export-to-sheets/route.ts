@@ -84,25 +84,61 @@ export async function POST(request: NextRequest) {
     console.log(`[ExportToSheets] Project ID: ${projectId}`);
     console.log(`[ExportToSheets] User ID: ${userId}`);
 
-    // Get user's organization
-    const { data: profile } = await supabase
+    // Get admin client first
+    const adminClient = getAdminClient();
+    if (!adminClient) {
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+    }
+
+    // Get user's organization using admin client for reliable access
+    let { data: profile } = await adminClient
       .from("profiles")
       .select("organization_id")
       .eq("id", user.id)
       .single();
 
+    // Auto-create organization if needed
     if (!profile?.organization_id) {
-      return NextResponse.json({ error: "No organization found" }, { status: 400 });
+      const { data: newOrg } = await adminClient
+        .from("organizations")
+        .insert({
+          name: `${user.email?.split("@")[0] || "User"}'s Workspace`,
+          subscription_tier: "enterprise",
+        })
+        .select()
+        .single();
+
+      if (newOrg) {
+        if (!profile) {
+          const { data: newProfile } = await adminClient
+            .from("profiles")
+            .insert({
+              id: user.id,
+              full_name: user.email?.split("@")[0] || "User",
+              role: "admin",
+              organization_id: newOrg.id,
+            })
+            .select()
+            .single();
+          profile = newProfile;
+        } else {
+          const { data: updatedProfile } = await adminClient
+            .from("profiles")
+            .update({ organization_id: newOrg.id })
+            .eq("id", user.id)
+            .select()
+            .single();
+          profile = updatedProfile;
+        }
+      }
+    }
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: "Failed to setup organization" }, { status: 500 });
     }
 
     organisationId = profile.organization_id;
     console.log(`[ExportToSheets] Organization ID: ${organisationId}`);
-
-    // Get admin client
-    const adminClient = getAdminClient();
-    if (!adminClient) {
-      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
-    }
 
     // Get Google access token
     const cookieStore = await cookies();

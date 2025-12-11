@@ -6,50 +6,23 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 
 export const dynamic = "force-dynamic";
 
-function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) return null;
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
-
-async function getSessionData(supabase: any, adminClient: any) {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
-
-  const { data: profile } = await adminClient
-    .from("profiles")
-    .select("organization_id")
-    .eq("id", user.id)
-    .single();
-
-  if (!profile?.organization_id) return null;
-
-  return { user, organizationId: profile.organization_id };
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
+
     const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    const session = await getSessionData(supabase, adminClient);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { organizationId } = session;
+    const { organizationId } = session.data!;
 
     // Fetch QC jobs with project info
     const { data: jobs, error } = await adminClient
@@ -70,7 +43,19 @@ export async function GET(request: NextRequest) {
       progress: job.status === "completed" || job.status === "failed" ? 100 :
                 job.status === "running" ? Math.min(95, job.progress || 50) :
                 job.status === "queued" ? 10 : 0,
+      result: job.result_json, // Alias for compatibility
     }));
+
+    // If there are queued jobs, trigger processing (non-blocking)
+    const queuedCount = enrichedJobs.filter((j: any) => j.status === "queued" || j.status === "pending").length;
+    if (queuedCount > 0) {
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+      fetch(`${baseUrl}/api/qc/process-queue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },
+        body: JSON.stringify({ limit: 3 }),
+      }).catch(() => {}); // Fire and forget
+    }
 
     return NextResponse.json({ jobs: enrichedJobs, organizationId });
   } catch (error: any) {
@@ -81,15 +66,14 @@ export async function GET(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
+
     const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
-    }
-
-    const session = await getSessionData(supabase, adminClient);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);

@@ -1,6 +1,9 @@
 # Use Node.js 20 (required by Supabase SDK)
 FROM node:20-alpine AS base
 
+# Install FFmpeg and other dependencies for QC processing
+RUN apk add --no-cache ffmpeg libc6-compat
+
 # Install dependencies only when needed
 FROM base AS deps
 RUN apk add --no-cache libc6-compat
@@ -39,11 +42,15 @@ RUN npm run build
 FROM base AS runner
 WORKDIR /app
 
+# FFmpeg is already installed in base image
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
+
+# Create tmp directory for QC processing with proper permissions
+RUN mkdir -p /tmp/qc-processing && chmod 777 /tmp/qc-processing
 
 # Copy public folder
 COPY --from=builder /app/public ./public
