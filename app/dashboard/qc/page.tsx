@@ -178,8 +178,15 @@ export default function QCResultsPage() {
     const result = job.result_json || job.result || {};
     switch (field) {
       case "audioMissing": return result.basicQC?.audioMissing?.detected ? "Yes" : "No";
-      case "loudness": const lufs = result.basicQC?.loudness?.lufs; return lufs !== undefined ? `${lufs.toFixed(1)} LUFS` : "N/A";
-      case "lipSync": if (result.lipSync?.skipped) return "Skipped"; const score = result.lipSync?.syncScore; return score !== undefined ? `${(score * 100).toFixed(0)}%` : "N/A";
+      case "loudness": {
+        const lufs = result.basicQC?.loudness?.lufs;
+        return (lufs !== undefined && lufs !== null) ? `${lufs.toFixed(1)} LUFS` : "N/A";
+      }
+      case "lipSync": {
+        if (result.lipSync?.skipped) return "Skipped";
+        const score = result.lipSync?.syncScore;
+        return (score !== undefined && score !== null) ? `${(score * 100).toFixed(0)}%` : "N/A";
+      }
       case "subtitleTiming": return result.basicQC?.subtitleTiming?.status === "failed" ? "Failed" : "OK";
       case "bgm": return result.bgm?.bgmDetected ? "Detected" : "Missing";
       case "glitches": return result.videoGlitch?.glitchCount || 0;
