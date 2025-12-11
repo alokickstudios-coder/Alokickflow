@@ -96,6 +96,28 @@ export async function GET(request: NextRequest) {
       region: process.env.VERCEL_REGION,
     };
 
+    // Check QC Worker configuration
+    const workerUrl = process.env.QC_WORKER_URL;
+    const workerSecret = process.env.QC_WORKER_SECRET;
+    const workerConfigured = !!(workerUrl && workerSecret);
+    
+    let workerHealth = null;
+    if (workerConfigured) {
+      try {
+        const healthResponse = await fetch(`${workerUrl}/ffmpeg-check`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (healthResponse.ok) {
+          workerHealth = await healthResponse.json();
+        } else {
+          workerHealth = { error: `HTTP ${healthResponse.status}` };
+        }
+      } catch (err: any) {
+        workerHealth = { error: err.message };
+      }
+    }
+
     return NextResponse.json({
       success: true,
       ffmpeg: {
@@ -104,6 +126,12 @@ export async function GET(request: NextRequest) {
         ffmpegError,
         ffprobeVersion,
         ffprobeError,
+        localAvailable: !!(ffmpegVersion && ffprobeVersion),
+      },
+      qcWorker: {
+        configured: workerConfigured,
+        url: workerUrl ? workerUrl.replace(/^(https?:\/\/[^/]+).*/, '$1') : null,
+        health: workerHealth,
       },
       environment,
       recentFailedJobs: recentFailedJobs.map(job => ({

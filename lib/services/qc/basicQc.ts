@@ -42,7 +42,7 @@ function getFFprobe(): string {
 }
 
 /**
- * Check if FFmpeg is available and executable
+ * Check if FFmpeg is available and executable locally
  */
 async function isFFmpegAvailable(): Promise<boolean> {
   if (_ffmpegAvailable !== null) {
@@ -54,12 +54,20 @@ async function isFFmpegAvailable(): Promise<boolean> {
     // Test if ffprobe is executable
     await execAsync(`"${ffprobePath}" -version`, { timeout: 5000 });
     _ffmpegAvailable = true;
+    console.log('[BasicQC] FFmpeg available locally');
     return true;
   } catch (error) {
-    console.warn('[BasicQC] FFmpeg/FFprobe not available:', error instanceof Error ? error.message : error);
+    console.warn('[BasicQC] FFmpeg/FFprobe not available locally:', error instanceof Error ? error.message : error);
     _ffmpegAvailable = false;
     return false;
   }
+}
+
+/**
+ * Check if QC Worker is configured for remote processing
+ */
+function isWorkerConfigured(): boolean {
+  return !!(process.env.QC_WORKER_URL && process.env.QC_WORKER_SECRET);
 }
 
 export interface BasicQCResult {
@@ -138,12 +146,16 @@ export async function runBasicQC(
 
   console.log(`[BasicQC] Processing episode ${episodeId} from ${filePath}`);
 
-  // Check if FFmpeg is available
+  // Check if FFmpeg is available locally
   const ffmpegOk = await isFFmpegAvailable();
   if (!ffmpegOk) {
-    console.warn('[BasicQC] FFmpeg not available - returning minimal QC result');
-    // Return a minimal result when FFmpeg isn't available
-    // This allows QC to "complete" without full analysis
+    // Check if QC Worker is configured
+    if (isWorkerConfigured()) {
+      console.log('[BasicQC] FFmpeg not available locally - using QC Worker');
+      return await runBasicQCViaWorker(info);
+    }
+    
+    console.warn('[BasicQC] FFmpeg not available and QC Worker not configured - returning minimal result');
     return createMinimalQCResult();
   }
 
@@ -664,6 +676,66 @@ async function getMetadata(filePath: string): Promise<BasicQCResult['metadata']>
       duration: 0,
     };
   }
+}
+
+/**
+ * Run Basic QC via the dedicated QC Worker (for Vercel deployment)
+ */
+async function runBasicQCViaWorker(fileInfo: FileInfo): Promise<BasicQCResult> {
+  const workerUrl = process.env.QC_WORKER_URL;
+  const workerSecret = process.env.QC_WORKER_SECRET;
+  
+  if (!workerUrl || !workerSecret) {
+    throw new Error('QC Worker not configured');
+  }
+
+  console.log(`[BasicQC] Sending to worker: ${workerUrl}`);
+
+  // Determine the file URL - could be local path, Supabase storage path, or URL
+  let requestBody: Record<string, any> = {
+    fileName: fileInfo.fileName,
+  };
+
+  // If it's a URL, send directly
+  if (fileInfo.filePath.startsWith('http')) {
+    requestBody.fileUrl = fileInfo.filePath;
+  } 
+  // If it looks like a Supabase storage path
+  else if (fileInfo.filePath.includes('deliveries/') || fileInfo.filePath.includes('uploads/')) {
+    requestBody.storagePath = fileInfo.filePath;
+  }
+  // For local paths, we need to read and send or create a signed URL
+  else {
+    // Local file - need to get it to the worker somehow
+    // For now, throw an error as this shouldn't happen in production
+    console.warn('[BasicQC] Local file path detected - worker needs URL or storage path');
+    requestBody.storagePath = fileInfo.filePath;
+  }
+
+  const response = await fetch(`${workerUrl}/qc/process`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${workerSecret}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`QC Worker failed (${response.status}): ${errorText}`);
+  }
+
+  const result = await response.json();
+  
+  if (!result.success) {
+    throw new Error(`QC Worker error: ${result.error}`);
+  }
+
+  console.log(`[BasicQC] Worker returned: status=${result.status}, score=${result.score}`);
+
+  // Return the basicQC result from the worker
+  return result.basicQC;
 }
 
 /**
