@@ -7,9 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
-import { runMockQC, type MockQCResult, formatQCErrors, getSeverityBadgeClass } from "@/lib/qc/mock-processor";
+import { runMockQC, type MockQCResult, getSeverityBadgeClass } from "@/lib/qc/mock-processor";
 
 interface UploadFile {
   file: File;
@@ -120,38 +119,30 @@ export function FileUploadZone({ onUploadComplete }: FileUploadZoneProps) {
         )
       );
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        throw new Error("Not authenticated");
+      // Get upload URL and delivery record via API
+      const initResponse = await fetch("/api/data/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: uploadFile.file.name,
+          fileSize: uploadFile.file.size,
+          fileType: uploadFile.file.type,
+        }),
+      });
+
+      if (!initResponse.ok) {
+        const errorData = await initResponse.json();
+        throw new Error(errorData.error || "Failed to initialize upload");
       }
 
-      // Get user's organization and project
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id")
-        .eq("id", user.id)
-        .single();
+      const { delivery, uploadUrl, storagePath, projectId } = await initResponse.json();
 
-      if (!profile?.organization_id) {
-        throw new Error("No organization found");
-      }
-
-      // Get first project (or you can let user select)
-      const { data: projects } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("organization_id", profile.organization_id)
-        .limit(1);
-
-      if (!projects || projects.length === 0) {
-        throw new Error("No project found. Please create a project first.");
-      }
-
-      const projectId = projects[0].id;
-
-      // Create storage path
-      const timestamp = Date.now();
-      const storagePath = `${profile.organization_id}/${projectId}/${timestamp}-${uploadFile.file.name}`;
+      // Update file state with delivery ID
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === uploadFile.id ? { ...f, deliveryId: delivery.id } : f
+        )
+      );
 
       // Simulate upload progress
       const progressInterval = setInterval(() => {
@@ -165,51 +156,25 @@ export function FileUploadZone({ onUploadComplete }: FileUploadZoneProps) {
         );
       }, 200);
 
-      // Upload to Supabase Storage
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from("deliveries")
-        .upload(storagePath, uploadFile.file, {
-          cacheControl: "3600",
-          upsert: false,
-        });
+      // Upload file to signed URL
+      const uploadResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        body: uploadFile.file,
+        headers: {
+          "Content-Type": uploadFile.file.type || "application/octet-stream",
+        },
+      });
 
       clearInterval(progressInterval);
 
-      if (uploadError) throw uploadError;
+      if (!uploadResponse.ok) {
+        throw new Error("Failed to upload file to storage");
+      }
 
       // Update progress to 100% and change status to processing
       setFiles((prev) =>
         prev.map((f) =>
           f.id === uploadFile.id ? { ...f, progress: 100, status: "processing" } : f
-        )
-      );
-
-      // Create delivery record with initial status
-      const { data: delivery, error: deliveryError } = await supabase
-        .from("deliveries")
-        .insert({
-          organization_id: profile.organization_id,
-          project_id: projectId,
-          vendor_id: user.id,
-          file_name: uploadFile.file.name,
-          original_file_name: uploadFile.file.name,
-          status: "processing",
-          storage_path: storagePath,
-          file_size: uploadFile.file.size,
-          file_type: uploadFile.file.type.startsWith("video/") ? "video" : "audio",
-        })
-        .select()
-        .single();
-
-      if (deliveryError || !delivery) {
-        console.error("Error creating delivery record:", deliveryError);
-        throw new Error("Failed to create delivery record");
-      }
-
-      // Update file state with delivery ID
-      setFiles((prev) =>
-        prev.map((f) =>
-          f.id === uploadFile.id ? { ...f, deliveryId: delivery.id } : f
         )
       );
 
@@ -221,21 +186,17 @@ export function FileUploadZone({ onUploadComplete }: FileUploadZoneProps) {
 
       const qcResult = await runMockQC(uploadFile.file.name);
 
-      // Update delivery record with QC results
-      if (delivery) {
-        const { error: updateError } = await supabase
-          .from("deliveries")
-          .update({
-            status: qcResult.status === "passed" ? "qc_passed" : "qc_failed",
-            qc_report: qcResult,
-            qc_errors: qcResult.errors,
-          })
-          .eq("id", delivery.id);
-
-        if (updateError) {
-          console.error("Error updating delivery with QC results:", updateError);
-        }
-      }
+      // Update delivery record with QC results via API
+      await fetch("/api/data/upload", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deliveryId: delivery.id,
+          status: qcResult.status === "passed" ? "qc_passed" : "qc_failed",
+          qc_report: qcResult,
+          qc_errors: qcResult.errors,
+        }),
+      });
 
       // Update file state with QC result
       setFiles((prev) =>

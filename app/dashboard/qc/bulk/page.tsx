@@ -37,7 +37,6 @@ import {
   RefreshCw,
   FileSpreadsheet,
   Pause,
-  Play,
   Trash2,
   MoreVertical,
   Eye,
@@ -50,9 +49,7 @@ import {
   ChevronDown,
   FolderOpen,
   Copy,
-  Link as LinkIcon,
 } from "lucide-react";
-import { supabase } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -118,91 +115,16 @@ export default function BulkQCPage() {
   const fetchResults = useCallback(async () => {
     try {
       setRefreshing(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id")
-        .eq("id", user.id)
-        .single();
-
-      if (!profile?.organization_id) return;
-
-      // Fetch from both deliveries and qc_jobs for comprehensive view
-      const [deliveriesRes, qcJobsRes] = await Promise.all([
-        supabase
-          .from("deliveries")
-          .select("*")
-          .eq("organization_id", profile.organization_id)
-          .order("created_at", { ascending: false })
-          .limit(200),
-        supabase
-          .from("qc_jobs")
-          .select("*")
-          .eq("organisation_id", profile.organization_id)
-          .order("created_at", { ascending: false })
-          .limit(200),
-      ]);
-
-      const deliveries = deliveriesRes.data || [];
-      const qcJobs = qcJobsRes.data || [];
-
-      // Merge and deduplicate results
-      const allResults = new Map<string, QCJobResult>();
       
-      // Process deliveries
-      deliveries.forEach((d) => {
-        allResults.set(d.id, {
-          ...d,
-          progress: d.status === "qc_passed" || d.status === "qc_failed" ? 100 : 
-                    d.status === "processing" ? 50 : 0,
-        });
-      });
-
-      // Process QC jobs (overwrite with more recent data)
-      qcJobs.forEach((job: any) => {
-        const existing: Partial<QCJobResult> = allResults.get(job.delivery_id) || {};
-        allResults.set(job.delivery_id || job.id, {
-          
-          id: job.delivery_id || job.id,
-          file_name: job.file_name || existing.file_name || "",
-          storage_path: existing.storage_path || job.storage_path || "",
-          original_file_name: job.file_name || existing.original_file_name || "",
-          status: job.status === "completed" ? "qc_passed" : 
-                  job.status === "failed" ? "qc_failed" : job.status,
-          drive_link: job.drive_link,
-          drive_file_id: job.drive_file_id,
-          qc_report: job.result || existing.qc_report,
-          qc_errors: job.result?.errors || existing.qc_errors || [],
-          created_at: job.created_at,
-          updated_at: job.updated_at,
-          progress: job.status === "completed" || job.status === "failed" ? 100 :
-                    job.status === "running" ? Math.min(95, (job.progress || 50)) :
-                    job.status === "queued" ? 10 : 0,
-          score: job.result?.summary?.score,
-          project_id: job.project_id || existing.project_id,
-        });
-      });
-
-      const resultArray = Array.from(allResults.values());
-      setQcCount(resultArray.length);
-
-      // Fetch project details
-      const projectIds = [...new Set(resultArray.map((r) => r.project_id).filter(Boolean))];
-      if (projectIds.length > 0) {
-        const { data: projects } = await supabase
-          .from("projects")
-          .select("id, code, name")
-          .in("id", projectIds);
-
-        resultArray.forEach((result) => {
-          if (result.project_id) {
-            result.project = projects?.find((p) => p.id === result.project_id);
-          }
-        });
+      // Use API route instead of direct Supabase calls
+      const response = await fetch("/api/data/deliveries");
+      if (!response.ok) {
+        throw new Error("Failed to fetch deliveries");
       }
 
+      const data = await response.json();
+      const resultArray = data.results || [];
+      setQcCount(resultArray.length);
       setResults(resultArray);
     } catch (error) {
       console.error("Error fetching QC results:", error);
@@ -215,7 +137,7 @@ export default function BulkQCPage() {
   // Initial fetch and polling with faster interval for real-time updates
   useEffect(() => {
     fetchResults();
-    const interval = setInterval(fetchResults, 3000); // 3 second polling for real-time feel
+    const interval = setInterval(fetchResults, 3000);
     return () => clearInterval(interval);
   }, [fetchResults]);
 
@@ -311,27 +233,10 @@ export default function BulkQCPage() {
   const handleDownload = async (result: QCJobResult) => {
     try {
       if (result.drive_link || result.drive_file_id) {
-        // Google Drive file - open download link
         const fileId = result.drive_file_id || extractDriveFileId(result.drive_link || "");
         if (fileId) {
           window.open(`https://drive.google.com/uc?export=download&id=${fileId}`, "_blank");
           toast({ title: "Download started", description: "Opening Google Drive download..." });
-        }
-      } else if (result.storage_path) {
-        // Supabase storage file
-        const { data, error } = await supabase.storage
-          .from("deliveries")
-          .createSignedUrl(result.storage_path, 3600);
-
-        if (error) throw error;
-        if (data?.signedUrl) {
-          const a = document.createElement("a");
-          a.href = data.signedUrl;
-          a.download = result.original_file_name || result.file_name || "download";
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          toast({ title: "Download started", description: "File is downloading..." });
         }
       }
     } catch (error: any) {
@@ -385,7 +290,6 @@ export default function BulkQCPage() {
     try {
       setCancellingIds((prev) => new Set(prev).add(result.id));
       
-      // Cancel if still processing
       if (["queued", "running", "processing"].includes(result.status)) {
         await fetch("/api/qc/cancel", {
           method: "POST",
@@ -394,9 +298,8 @@ export default function BulkQCPage() {
         });
       }
 
-      // Delete from database
-      await supabase.from("deliveries").delete().eq("id", result.id);
-      await supabase.from("qc_jobs").delete().eq("delivery_id", result.id);
+      // Use API route to delete
+      await fetch(`/api/data/deliveries?id=${result.id}`, { method: "DELETE" });
 
       toast({ title: "File deleted", description: `${result.original_file_name || result.file_name} has been removed.` });
       fetchResults();
@@ -587,6 +490,7 @@ export default function BulkQCPage() {
 
         {/* Creative QC Toggle - Enterprise Only */}
         <CreativeQCToggle />
+
         {/* Upload Section */}
         <div className="space-y-6">
           {isFree ? (
@@ -743,7 +647,6 @@ export default function BulkQCPage() {
                           key={result.id}
                           className="border-zinc-800/30 hover:bg-zinc-800/20 transition-colors group"
                         >
-                          {/* File Name - Clickable */}
                           <TableCell className="py-4">
                             <div className="flex items-center gap-3">
                               <div className="flex-shrink-0">
@@ -766,7 +669,6 @@ export default function BulkQCPage() {
                                     </Badge>
                                   )}
                                 </div>
-                                {/* Progress Bar for processing files */}
                                 {processing && (
                                   <div className="mt-2 space-y-1">
                                     <div className="flex items-center justify-between">
@@ -792,8 +694,6 @@ export default function BulkQCPage() {
                               </div>
                             </div>
                           </TableCell>
-
-                          {/* Project - Clickable */}
                           <TableCell className="py-4">
                             {result.project ? (
                               <button
@@ -811,8 +711,6 @@ export default function BulkQCPage() {
                               <span className="text-sm text-zinc-500">—</span>
                             )}
                           </TableCell>
-
-                          {/* Status */}
                           <TableCell className="py-4">
                             <div className="flex items-center gap-2">
                               <StatusIcon className={cn(
@@ -833,8 +731,6 @@ export default function BulkQCPage() {
                               </Badge>
                             )}
                           </TableCell>
-
-                          {/* Score */}
                           <TableCell className="py-4">
                             {result.score !== undefined ? (
                               <div className="flex items-center gap-2">
@@ -852,11 +748,8 @@ export default function BulkQCPage() {
                               <span className="text-xs text-zinc-500">—</span>
                             )}
                           </TableCell>
-
-                          {/* Actions */}
                           <TableCell className="py-4 text-right">
                             <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {/* Quick Pause for processing */}
                               {processing && (
                                 <Button
                                   variant="ghost"
@@ -873,8 +766,6 @@ export default function BulkQCPage() {
                                   )}
                                 </Button>
                               )}
-
-                              {/* Open in Drive */}
                               {hasDriveLink && (
                                 <Button
                                   variant="ghost"
@@ -886,8 +777,6 @@ export default function BulkQCPage() {
                                   <ExternalLink className="h-4 w-4" />
                                 </Button>
                               )}
-
-                              {/* Download */}
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -897,8 +786,6 @@ export default function BulkQCPage() {
                               >
                                 <Download className="h-4 w-4" />
                               </Button>
-
-                              {/* More Actions */}
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button
@@ -914,28 +801,23 @@ export default function BulkQCPage() {
                                     <Eye className="h-4 w-4 mr-2" />
                                     View Details
                                   </DropdownMenuItem>
-                                  
                                   {hasDriveLink && (
                                     <DropdownMenuItem onClick={() => handleOpenInDrive(result)}>
                                       <ExternalLink className="h-4 w-4 mr-2" />
                                       Open in Drive
                                     </DropdownMenuItem>
                                   )}
-                                  
                                   <DropdownMenuItem onClick={() => handleDownload(result)}>
                                     <Download className="h-4 w-4 mr-2" />
                                     Download
                                   </DropdownMenuItem>
-                                  
                                   {result.project && (
                                     <DropdownMenuItem onClick={() => handleExportToSheets(result.project?.id, result.project?.name)}>
                                       <FileSpreadsheet className="h-4 w-4 mr-2" />
                                       Export Project to Sheets
                                     </DropdownMenuItem>
                                   )}
-                                  
                                   <DropdownMenuSeparator className="bg-zinc-700" />
-                                  
                                   {processing && (
                                     <DropdownMenuItem 
                                       onClick={() => handlePause(result)}
@@ -945,7 +827,6 @@ export default function BulkQCPage() {
                                       Pause Processing
                                     </DropdownMenuItem>
                                   )}
-                                  
                                   <DropdownMenuItem
                                     onClick={() => handleDelete(result)}
                                     className="text-red-400"
@@ -964,7 +845,6 @@ export default function BulkQCPage() {
                 </Table>
               </div>
               
-              {/* Empty State for filtered results */}
               {filteredResults.length === 0 && results.length > 0 && (
                 <div className="p-12 text-center">
                   <p className="text-zinc-400">No results match your search or filter.</p>
@@ -1044,7 +924,7 @@ export default function BulkQCPage() {
                 )}
               </div>
 
-              {/* Progress for processing files */}
+              {/* Progress */}
               {isProcessing(selectedFile.status) && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-sm">

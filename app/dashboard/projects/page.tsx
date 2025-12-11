@@ -54,7 +54,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { supabase } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
@@ -124,97 +123,28 @@ export default function ProjectsPage() {
   const fetchProjects = useCallback(async () => {
     try {
       setRefreshing(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      
+      // Use API route instead of direct Supabase calls
+      const response = await fetch("/api/data/projects");
+      if (!response.ok) {
+        throw new Error("Failed to fetch projects");
+      }
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id, role")
-        .eq("id", user.id)
-        .single();
-
-      if (!profile?.organization_id) return;
-      setOrganizationId(profile.organization_id);
+      const data = await response.json();
+      
+      setProjects(data.projects || []);
+      setProjectStages(data.stages || {});
+      setTeamMembers(data.teamMembers || []);
+      setOrganizationId(data.organizationId);
+      setSubscriptionTier(data.subscriptionTier as "free" | "pro" | "enterprise" | null);
 
       // Fetch vendors
-      const vendorsRes = await fetch(`/api/vendors/create?organizationId=${profile.organization_id}`);
-      if (vendorsRes.ok) {
-        const vendorsData = await vendorsRes.json();
-        setVendors(vendorsData.vendors || []);
-      }
-
-      // Fetch projects
-      const { data: projectsData, error } = await supabase
-        .from("projects")
-        .select("*")
-        .eq("organization_id", profile.organization_id)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-
-      // Fetch QC jobs to get file counts and scores per project
-      const { data: qcJobs } = await supabase
-        .from("qc_jobs")
-        .select("project_id, status, result")
-        .eq("organisation_id", profile.organization_id);
-
-      // Calculate stats per project
-      const projectStats: Record<string, { total: number; passed: number; failed: number; processing: number; scores: number[] }> = {};
-      (qcJobs || []).forEach((job) => {
-        if (!job.project_id) return;
-        if (!projectStats[job.project_id]) {
-          projectStats[job.project_id] = { total: 0, passed: 0, failed: 0, processing: 0, scores: [] };
+      if (data.organizationId) {
+        const vendorsRes = await fetch(`/api/vendors/create?organizationId=${data.organizationId}`);
+        if (vendorsRes.ok) {
+          const vendorsData = await vendorsRes.json();
+          setVendors(vendorsData.vendors || []);
         }
-        projectStats[job.project_id].total++;
-        if (job.status === "completed" && job.result?.status === "passed") projectStats[job.project_id].passed++;
-        else if (job.status === "failed" || (job.status === "completed" && job.result?.status === "failed")) projectStats[job.project_id].failed++;
-        else if (["queued", "running", "processing"].includes(job.status)) projectStats[job.project_id].processing++;
-        if (job.result?.summary?.score) projectStats[job.project_id].scores.push(job.result.summary.score);
-      });
-
-      // Enrich projects with stats
-      const enrichedProjects = (projectsData || []).map((project) => {
-        const stats = projectStats[project.id] || { total: 0, passed: 0, failed: 0, processing: 0, scores: [] };
-        return {
-          ...project,
-          fileCount: stats.total,
-          passedCount: stats.passed,
-          failedCount: stats.failed,
-          processingCount: stats.processing,
-          avgScore: stats.scores.length > 0 ? Math.round(stats.scores.reduce((a, b) => a + b, 0) / stats.scores.length) : undefined,
-        };
-      });
-
-      setProjects(enrichedProjects);
-
-      // Fetch project stages
-      const stagesRes = await fetch(`/api/project-stages?organizationId=${profile.organization_id}`);
-      if (stagesRes.ok) {
-        const stagesData = await stagesRes.json();
-        const grouped: Record<string, ProjectStage[]> = {};
-        (stagesData.stages || []).forEach((stage: ProjectStage) => {
-          if (!grouped[stage.project_id]) grouped[stage.project_id] = [];
-          grouped[stage.project_id].push(stage);
-        });
-        setProjectStages(grouped);
-      }
-
-      // Fetch team members
-      const { data: members } = await supabase
-        .from("profiles")
-        .select("id, full_name, role")
-        .eq("organization_id", profile.organization_id)
-        .neq("role", "vendor");
-      if (members) setTeamMembers(members);
-
-      // Fetch subscription tier
-      const { data: org } = await supabase
-        .from("organizations")
-        .select("subscription_tier")
-        .eq("id", profile.organization_id)
-        .single();
-      if (org?.subscription_tier) {
-        setSubscriptionTier(org.subscription_tier as "free" | "pro" | "enterprise");
       }
     } catch (error: any) {
       console.error("Error fetching projects:", error);
@@ -234,36 +164,18 @@ export default function ProjectsPage() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not authenticated");
+      const response = await fetch("/api/data/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: formData.code,
+          name: formData.name,
+          vendorId: formData.vendorId,
+        }),
+      });
 
-      const { data: profile } = await supabase.from("profiles").select("organization_id").eq("id", user.id).single();
-      if (!profile?.organization_id) throw new Error("No organization found");
-
-      // Create project without settings (settings column may not exist)
-      const { data: newProject, error } = await supabase.from("projects").insert({
-        organization_id: profile.organization_id,
-        code: formData.code.toUpperCase().trim(),
-        name: formData.name.trim(),
-        naming_convention_regex: "^([A-Z0-9_]+)[-_]?EP[_-]?(\\d{1,4})[_-]?([A-Za-z]+)[_-]?(.+)$",
-      }).select().single();
-
-      if (error) throw error;
-
-      // If vendor selected, assign via API
-      if (formData.vendorId && formData.vendorId !== "none" && newProject) {
-        const selectedVendor = vendors.find(v => v.id === formData.vendorId);
-        await fetch("/api/projects/assign-vendor", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            projectId: newProject.id,
-            vendorId: formData.vendorId,
-            vendorName: selectedVendor?.full_name || selectedVendor?.company_name || null,
-            organizationId: profile.organization_id,
-          }),
-        });
-      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
 
       toast({ title: "Project Created", description: `Project "${formData.name}" has been created.`, variant: "success" });
       setDialogOpen(false);
@@ -278,8 +190,17 @@ export default function ProjectsPage() {
 
   const updateProjectStatus = async (project: Project, status: "active" | "completed" | "archived") => {
     try {
-      const { error } = await supabase.from("projects").update({ status }).eq("id", project.id);
-      if (error) throw error;
+      const response = await fetch("/api/data/projects", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: project.id, status }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error);
+      }
+
       setProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, status } : p)));
       toast({ title: "Status updated", description: `Project marked as ${status}` });
     } catch (err: any) {
@@ -290,7 +211,6 @@ export default function ProjectsPage() {
   const assignVendorToProject = async (project: Project, vendorId: string | null) => {
     if (!organizationId) return;
     
-    // Handle "none" value
     const actualVendorId = vendorId === "none" ? null : vendorId;
     
     setAssigningVendor(project.id);
@@ -310,7 +230,6 @@ export default function ProjectsPage() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to assign vendor");
 
-      // Update local vendorAssignments state
       if (actualVendorId && vendor) {
         setVendorAssignments((prev) => ({
           ...prev,
@@ -343,9 +262,15 @@ export default function ProjectsPage() {
   const handleDeleteProject = async (project: Project) => {
     if (!confirm(`Delete project "${project.name}"? This will also delete all associated QC jobs.`)) return;
     try {
-      await supabase.from("qc_jobs").delete().eq("project_id", project.id);
-      await supabase.from("project_stages").delete().eq("project_id", project.id);
-      await supabase.from("projects").delete().eq("id", project.id);
+      const response = await fetch(`/api/data/projects?id=${project.id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error);
+      }
+
       toast({ title: "Project deleted" });
       fetchProjects();
     } catch (err: any) {
@@ -763,11 +688,6 @@ export default function ProjectsPage() {
                 {vendors.length === 0 && (
                   <p className="text-xs text-zinc-500">
                     No vendors available. <Link href="/dashboard/vendors" className="text-purple-400 hover:underline">Add vendors</Link> first.
-                  </p>
-                )}
-                {vendorAssignments[selectedProject.id]?.vendorName && (
-                  <p className="text-xs text-zinc-400">
-                    Currently assigned to: <span className="text-purple-400">{vendorAssignments[selectedProject.id].vendorName}</span>
                   </p>
                 )}
               </div>

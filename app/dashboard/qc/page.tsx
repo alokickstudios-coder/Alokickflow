@@ -51,7 +51,6 @@ import {
   Copy,
   Sparkles,
 } from "lucide-react";
-import { supabase } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { CreativeQCToggle } from "@/components/qc/creative-qc-toggle";
@@ -71,7 +70,6 @@ interface QCJob {
   updated_at: string;
   progress?: number;
   project?: { id: string; code: string; name: string };
-  // Creative QC fields
   creative_qc_status?: string;
   creative_qc_overall_score?: number;
   creative_qc_overall_risk_score?: number;
@@ -102,38 +100,15 @@ export default function QCResultsPage() {
   const fetchQCJobs = useCallback(async () => {
     try {
       setRefreshing(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      
+      // Use API route instead of direct Supabase calls
+      const response = await fetch("/api/data/qc-jobs");
+      if (!response.ok) {
+        throw new Error("Failed to fetch QC jobs");
+      }
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id")
-        .eq("id", user.id)
-        .single();
-
-      if (!profile?.organization_id) return;
-
-      const { data: jobsData, error: jobsError } = await supabase
-        .from("qc_jobs")
-        .select(`
-          *,
-          project:projects(id, code, name)
-        `)
-        .eq("organisation_id", profile.organization_id)
-        .order("created_at", { ascending: false })
-        .limit(500);
-
-      if (jobsError) throw jobsError;
-
-      // Add progress info
-      const enrichedJobs = (jobsData || []).map((job) => ({
-        ...job,
-        progress: job.status === "completed" || job.status === "failed" ? 100 :
-                  job.status === "running" ? Math.min(95, job.progress || 50) :
-                  job.status === "queued" ? 10 : 0,
-      }));
-
-      setJobs(enrichedJobs as QCJob[]);
+      const data = await response.json();
+      setJobs(data.jobs || []);
     } catch (error: any) {
       console.error("Error fetching QC jobs:", error);
     } finally {
@@ -280,9 +255,10 @@ export default function QCResultsPage() {
     if (!confirm(`Delete "${job.file_name}"?`)) return;
     try {
       setActionLoading((prev) => new Set(prev).add(job.id));
-      if (isProcessing(job.status)) await fetch("/api/qc/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobIds: [job.id] }) });
-      await supabase.from("qc_jobs").delete().eq("id", job.id);
-      if (job.delivery_id) await supabase.from("deliveries").delete().eq("id", job.delivery_id);
+      if (isProcessing(job.status)) {
+        await fetch("/api/qc/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobIds: [job.id] }) });
+      }
+      await fetch(`/api/data/qc-jobs?id=${job.id}`, { method: "DELETE" });
       toast({ title: "Job deleted" });
       fetchQCJobs();
     } catch {
@@ -306,7 +282,6 @@ export default function QCResultsPage() {
     processing: jobs.filter((j) => isProcessing(j.status)).length,
   };
 
-  // Get unique projects for export dropdown
   const uniqueProjects = [...new Map(filteredAndSorted.filter((j) => j.project?.id).map((j) => [j.project!.id, j.project!])).values()];
 
   return (

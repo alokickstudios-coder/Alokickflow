@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { supabase } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
 interface Analytics {
@@ -51,90 +50,14 @@ export default function AnalyticsPage() {
 
   const fetchAnalytics = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      // Use API route instead of direct Supabase calls
+      const response = await fetch("/api/data/analytics");
+      if (!response.ok) {
+        throw new Error("Failed to fetch analytics");
+      }
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id")
-        .eq("id", user.id)
-        .single();
-
-      if (!profile?.organization_id) return;
-
-      const orgId = profile.organization_id;
-
-      // Fetch all data in parallel
-      const [
-        deliveriesResult,
-        projectsResult,
-        vendorsResult,
-        monthlyResult,
-      ] = await Promise.all([
-        supabase
-          .from("deliveries")
-          .select("id, status, created_at")
-          .eq("organization_id", orgId),
-        supabase
-          .from("projects")
-          .select("id, status")
-          .eq("organization_id", orgId),
-        supabase
-          .from("profiles")
-          .select("id")
-          .eq("organization_id", orgId)
-          .eq("role", "vendor"),
-        supabase
-          .from("deliveries")
-          .select("id, created_at")
-          .eq("organization_id", orgId)
-          .gte("created_at", new Date(new Date().setDate(1)).toISOString()),
-      ]);
-
-      const deliveries = deliveriesResult.data || [];
-      const projects = projectsResult.data || [];
-      const vendors = vendorsResult.data || [];
-      const monthlyDeliveries = monthlyResult.data || [];
-
-      // Calculate QC stats
-      const qcPassed = deliveries.filter((d) => d.status === "qc_passed").length;
-      const qcFailed = deliveries.filter((d) => d.status === "qc_failed").length;
-      const qcTotal = qcPassed + qcFailed;
-      const qcPassRate = qcTotal > 0 ? Math.round((qcPassed / qcTotal) * 100) : 0;
-
-      // Calculate trend (simplified - comparing to last month)
-      const lastMonth = new Date();
-      lastMonth.setMonth(lastMonth.getMonth() - 1);
-      const lastMonthDeliveries = deliveries.filter(
-        (d) => new Date(d.created_at) >= lastMonth
-      ).length;
-      const trend = lastMonthDeliveries > 0
-        ? Math.round(((monthlyDeliveries.length - lastMonthDeliveries) / lastMonthDeliveries) * 100)
-        : 0;
-
-      // Generate recent activity
-      const recentActivity: ActivityItem[] = deliveries
-        .slice(0, 5)
-        .map((d) => ({
-          id: d.id,
-          type: "delivery" as const,
-          message: `File ${d.status === "qc_passed" ? "passed" : d.status === "qc_failed" ? "failed" : "processed"} QC`,
-          timestamp: d.created_at,
-        }));
-
-      setAnalytics({
-        totalDeliveries: deliveries.length,
-        deliveriesThisMonth: monthlyDeliveries.length,
-        deliveriesTrend: trend,
-        totalProjects: projects.length,
-        activeProjects: projects.filter((p) => p.status === "active").length,
-        totalVendors: vendors.length,
-        qcPassRate,
-        qcPassed,
-        qcFailed,
-        storageUsed: `${(deliveries.length * 50).toFixed(1)} MB`, // Estimated
-        recentActivity,
-      });
+      const data = await response.json();
+      setAnalytics(data);
     } catch (error) {
       console.error("Error fetching analytics:", error);
     } finally {
@@ -362,4 +285,3 @@ export default function AnalyticsPage() {
     </div>
   );
 }
-
