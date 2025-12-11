@@ -5,8 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 import {
   parseNaturalLanguageCommand,
   predictQualityIssues,
@@ -19,23 +18,12 @@ import {
 
 export const dynamic = "force-dynamic";
 
-function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) return null;
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
-
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const session = await getAuthenticatedSession();
+    
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
     }
 
     const adminClient = getAdminClient();
@@ -43,16 +31,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    // Get user's organization
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile?.organization_id) {
-      return NextResponse.json({ error: "No organization found" }, { status: 400 });
-    }
+    const { organizationId } = session.data!;
 
     const body = await request.json();
     const { command, parsed } = body;
@@ -76,7 +55,7 @@ export async function POST(request: NextRequest) {
           const { data: jobs } = await adminClient
             .from("qc_jobs")
             .select("*, project:projects(id, code, name)")
-            .eq("organisation_id", profile.organization_id)
+            .eq("organisation_id", organizationId)
             .or("status.eq.failed,result->status.eq.failed")
             .order("created_at", { ascending: false })
             .limit(50);
@@ -91,7 +70,7 @@ export async function POST(request: NextRequest) {
           const { data: vendors } = await adminClient
             .from("profiles")
             .select("*")
-            .eq("organization_id", profile.organization_id)
+            .eq("organization_id", organizationId)
             .eq("role", "vendor");
 
           result.message = `Found ${vendors?.length || 0} vendors`;
@@ -104,7 +83,7 @@ export async function POST(request: NextRequest) {
           const { data: projects } = await adminClient
             .from("projects")
             .select("*")
-            .eq("organization_id", profile.organization_id);
+            .eq("organization_id", organizationId);
 
           result.message = `Found ${projects?.length || 0} projects`;
           result.data = {
@@ -126,7 +105,7 @@ export async function POST(request: NextRequest) {
           const { data: jobs } = await adminClient
             .from("qc_jobs")
             .select("*, project:projects(id, code, name)")
-            .eq("organisation_id", profile.organization_id)
+            .eq("organisation_id", organizationId)
             .eq("status", "completed")
             .order("created_at", { ascending: false })
             .limit(100);
@@ -182,7 +161,7 @@ export async function POST(request: NextRequest) {
         const { data: qcJobs } = await adminClient
           .from("qc_jobs")
           .select("*, project:projects(id, code, name)")
-          .eq("organisation_id", profile.organization_id)
+          .eq("organisation_id", organizationId)
           .order("created_at", { ascending: false })
           .limit(200);
 
@@ -193,7 +172,7 @@ export async function POST(request: NextRequest) {
         const { data: projects } = await adminClient
           .from("projects")
           .select("*")
-          .eq("organization_id", profile.organization_id)
+          .eq("organization_id", organizationId)
           .or("status.is.null,status.eq.active")
           .limit(10);
 
@@ -231,7 +210,7 @@ export async function POST(request: NextRequest) {
         const { data: jobs } = await adminClient
           .from("qc_jobs")
           .select("*, project:projects(id, code, name)")
-          .eq("organisation_id", profile.organization_id)
+          .eq("organisation_id", organizationId)
           .or("status.eq.failed,result->status.eq.failed")
           .order("created_at", { ascending: false })
           .limit(50);
@@ -292,7 +271,7 @@ export async function POST(request: NextRequest) {
         const { data: projects } = await adminClient
           .from("projects")
           .select("id, code, name")
-          .eq("organization_id", profile.organization_id)
+          .eq("organization_id", organizationId)
           .limit(10);
 
         result.message = "Export options ready";

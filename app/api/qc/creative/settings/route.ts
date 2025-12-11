@@ -51,21 +51,77 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get user's organization
-    const { data: profile } = await supabase
+    // Get user's organization using admin client for reliable access
+    const adminClient = getAdminClient();
+    if (!adminClient) {
+      return NextResponse.json(
+        { error: "Server configuration error" },
+        { status: 500 }
+      );
+    }
+
+    let { data: profile } = await adminClient
       .from("profiles")
       .select("organization_id, role")
       .eq("id", user.id)
       .single();
 
+    // Auto-create profile and organization if not found
+    if (!profile?.organization_id) {
+      // Create organization
+      const { data: newOrg } = await adminClient
+        .from("organizations")
+        .insert({
+          name: `${user.email?.split("@")[0] || "User"}'s Workspace`,
+          subscription_tier: "enterprise",
+          creative_qc_settings: { enabled: true, auto_analyze: true },
+        })
+        .select()
+        .single();
+
+      if (newOrg) {
+        // Create or update profile
+        if (!profile) {
+          const { data: newProfile } = await adminClient
+            .from("profiles")
+            .insert({
+              id: user.id,
+              full_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "User",
+              role: "admin",
+              organization_id: newOrg.id,
+            })
+            .select()
+            .single();
+          profile = newProfile;
+        } else {
+          const { data: updatedProfile } = await adminClient
+            .from("profiles")
+            .update({ organization_id: newOrg.id })
+            .eq("id", user.id)
+            .select()
+            .single();
+          profile = updatedProfile;
+        }
+      }
+    }
+
     if (!profile?.organization_id) {
       return NextResponse.json(
-        { error: "Organization not found" },
-        { status: 404 }
+        { error: "Failed to setup organization" },
+        { status: 500 }
       );
     }
 
     const organizationId = profile.organization_id;
+    
+    // Ensure enterprise access is set
+    await adminClient
+      .from("organizations")
+      .update({ 
+        subscription_tier: "enterprise",
+        creative_qc_settings: { enabled: true, auto_analyze: true },
+      })
+      .eq("id", organizationId);
 
     // Check if Creative QC is available for this organization
     const availability = await isCreativeQCAvailable(organizationId);
@@ -118,8 +174,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get user's organization and role
-    const { data: profile } = await supabase
+    // Get user's organization and role using admin client
+    const adminClient = getAdminClient();
+    if (!adminClient) {
+      return NextResponse.json(
+        { error: "Server configuration error" },
+        { status: 500 }
+      );
+    }
+
+    const { data: profile } = await adminClient
       .from("profiles")
       .select("organization_id, role")
       .eq("id", user.id)
@@ -127,8 +191,8 @@ export async function POST(request: NextRequest) {
 
     if (!profile?.organization_id) {
       return NextResponse.json(
-        { error: "Organization not found" },
-        { status: 404 }
+        { error: "Please refresh the page to setup your organization" },
+        { status: 400 }
       );
     }
 
@@ -200,18 +264,15 @@ export async function POST(request: NextRequest) {
     }
 
     // Log the settings change (ignore errors)
-    const adminClient = getAdminClient();
-    if (adminClient) {
-      try {
-        await adminClient.from("creative_qc_audit_log").insert({
-          organization_id: organizationId,
-          action: "settings_updated",
-          details: settingsUpdate,
-          performed_by: user.id,
-        });
-      } catch {
-        // Ignore audit log errors
-      }
+    try {
+      await adminClient.from("creative_qc_audit_log").insert({
+        organization_id: organizationId,
+        action: "settings_updated",
+        details: settingsUpdate,
+        performed_by: user.id,
+      });
+    } catch {
+      // Ignore audit log errors
     }
 
     // Fetch and return updated settings

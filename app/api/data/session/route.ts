@@ -2,92 +2,35 @@
  * Unified Session API
  * 
  * Returns authenticated user, profile, organization, and subscription info.
- * Creates profile/organization if missing.
+ * ALWAYS creates profile/organization if missing - no user should ever lack an organization.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 
 export const dynamic = "force-dynamic";
 
-function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) return null;
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const session = await getAuthenticatedSession();
 
-    if (authError || !user) {
-      return NextResponse.json({ authenticated: false }, { status: 401 });
-    }
-
-    const adminClient = getAdminClient();
-    if (!adminClient) {
-      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
-    }
-
-    // Get profile
-    let { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("*")
-      .eq("id", user.id)
-      .single();
-
-    // Create profile if it doesn't exist
-    if (!profile) {
-      // First, ensure organization exists
-      const { data: newOrg } = await adminClient
-        .from("organizations")
-        .insert({
-          name: user.email?.split("@")[0] || "My Organization",
-          subscription_tier: "enterprise",
-        })
-        .select()
-        .single();
-
-      if (newOrg) {
-        const { data: newProfile } = await adminClient
-          .from("profiles")
-          .insert({
-            id: user.id,
-            full_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "User",
-            role: "admin",
-            organization_id: newOrg.id,
-          })
-          .select()
-          .single();
-
-        profile = newProfile;
+    if (!session.success) {
+      if (session.error === "Not authenticated") {
+        return NextResponse.json({ authenticated: false }, { status: 401 });
       }
+      return NextResponse.json({ error: session.error }, { status: 500 });
     }
 
-    // Get organization
-    let organization = null;
-    if (profile?.organization_id) {
-      const { data: org } = await adminClient
-        .from("organizations")
-        .select("*")
-        .eq("id", profile.organization_id)
-        .single();
-      organization = org;
-    }
+    const { user, profile, organization, organizationId } = session.data!;
 
     // Get subscription info
     let subscription = null;
-    if (profile?.organization_id) {
+    const adminClient = getAdminClient();
+    if (adminClient && organizationId) {
       const { data: sub } = await adminClient
         .from("organisation_subscriptions")
         .select("*, plan:plans(*)")
-        .eq("organisation_id", profile.organization_id)
+        .eq("organisation_id", organizationId)
         .eq("status", "active")
         .maybeSingle();
       subscription = sub;
@@ -95,14 +38,11 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       authenticated: true,
-      user: {
-        id: user.id,
-        email: user.email,
-      },
+      user,
       profile,
       organization,
       subscription,
-      organizationId: profile?.organization_id,
+      organizationId,
     });
   } catch (error: any) {
     console.error("Session API error:", error);

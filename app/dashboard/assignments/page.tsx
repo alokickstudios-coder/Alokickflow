@@ -118,47 +118,50 @@ export default function AssignmentsPage() {
 
   const initializeData = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      // Use session API for reliable organization access
+      const sessionRes = await fetch("/api/data/session");
+      if (!sessionRes.ok) {
         toast({
           title: "Authentication Required",
           description: "Please log in to view assignments",
           variant: "destructive",
         });
+        setLoading(false);
         return;
       }
-      setUserId(user.id);
 
-      // Get organization ID
-      let orgId: string | null = null;
-
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("organization_id")
-        .eq("id", user.id)
-        .single();
-
-      if (profile?.organization_id) {
-        orgId = profile.organization_id;
-      } else {
-        // Fallback: Get first organization
-        const { data: orgs } = await supabase
-          .from("organizations")
-          .select("id")
-          .limit(1);
-        
-        if (orgs && orgs.length > 0) {
-          orgId = orgs[0].id;
-        }
-      }
-
-      if (!orgId) {
+      const sessionData = await sessionRes.json();
+      
+      if (!sessionData.authenticated) {
         toast({
-          title: "No Organization",
-          description: "Please complete onboarding first",
+          title: "Authentication Required",
+          description: "Please log in to view assignments",
           variant: "destructive",
         });
         setLoading(false);
+        return;
+      }
+
+      setUserId(sessionData.user?.id || null);
+      const orgId = sessionData.organizationId;
+
+      if (!orgId) {
+        // Retry session to trigger auto-creation
+        const retryRes = await fetch("/api/data/session");
+        const retryData = await retryRes.json();
+        
+        if (!retryData.organizationId) {
+          toast({
+            title: "Setup Required",
+            description: "Setting up your workspace. Please refresh the page.",
+            variant: "destructive",
+          });
+          setLoading(false);
+          return;
+        }
+        
+        setOrganizationId(retryData.organizationId);
+        await fetchData(retryData.organizationId);
         return;
       }
 
@@ -166,6 +169,11 @@ export default function AssignmentsPage() {
       await fetchData(orgId);
     } catch (error) {
       console.error("Initialization error:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load data. Please refresh the page.",
+        variant: "destructive",
+      });
       setLoading(false);
     }
   };

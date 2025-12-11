@@ -5,46 +5,24 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 
 export const dynamic = "force-dynamic";
 
-function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) return null;
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const adminClient = getAdminClient();
+    const session = await getAuthenticatedSession();
     
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
+    }
+
+    const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile?.organization_id) {
-      return NextResponse.json({ error: "No organization found" }, { status: 400 });
-    }
-
-    const orgId = profile.organization_id;
+    const orgId = session.data!.organizationId;
 
     // Fetch all data in parallel
     const [deliveriesRes, projectsRes, vendorsRes, monthlyRes] = await Promise.all([
