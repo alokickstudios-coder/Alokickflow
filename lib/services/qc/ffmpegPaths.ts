@@ -4,27 +4,35 @@
  * This module provides cross-platform paths to ffmpeg and ffprobe binaries.
  * - In development (local): Uses system-installed ffmpeg if available, falls back to static
  * - In production (Vercel): Uses static binaries from npm packages
+ * 
+ * NOTE: Path resolution is lazy to avoid errors at module load time.
  */
 
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 
-// Try to import static binaries (will be available after npm install)
-let ffmpegStaticPath: string | null = null;
-let ffprobeStaticPath: string | null = null;
+// Lazy-loaded static binary paths (to avoid errors at module load time)
+let ffmpegStaticPath: string | null | undefined = undefined;
+let ffprobeStaticPath: string | null | undefined = undefined;
 
-try {
-  // @ts-ignore - These are optional dependencies
-  ffmpegStaticPath = require('ffmpeg-static');
-} catch {
-  // Not installed or not available
-}
+function loadStaticPaths() {
+  if (ffmpegStaticPath === undefined) {
+    try {
+      // @ts-ignore - These are optional dependencies
+      ffmpegStaticPath = require('ffmpeg-static');
+    } catch {
+      ffmpegStaticPath = null;
+    }
+  }
 
-try {
-  // @ts-ignore - These are optional dependencies  
-  ffprobeStaticPath = require('ffprobe-static').path;
-} catch {
-  // Not installed or not available
+  if (ffprobeStaticPath === undefined) {
+    try {
+      // @ts-ignore - These are optional dependencies  
+      ffprobeStaticPath = require('ffprobe-static').path;
+    } catch {
+      ffprobeStaticPath = null;
+    }
+  }
 }
 
 /**
@@ -47,6 +55,9 @@ function systemBinaryExists(name: string): string | null {
  * Prefers system binary in development, falls back to static
  */
 export function getFFmpegPath(): string {
+  // Load static paths lazily
+  loadStaticPaths();
+  
   // In development, prefer system ffmpeg (usually faster)
   if (process.env.NODE_ENV === 'development') {
     const systemPath = systemBinaryExists('ffmpeg');
@@ -76,6 +87,9 @@ export function getFFmpegPath(): string {
  * Prefers system binary in development, falls back to static
  */
 export function getFFprobePath(): string {
+  // Load static paths lazily
+  loadStaticPaths();
+  
   // In development, prefer system ffprobe (usually faster)
   if (process.env.NODE_ENV === 'development') {
     const systemPath = systemBinaryExists('ffprobe');
@@ -134,6 +148,9 @@ export function getFFmpegDiagnostics(): {
   ffprobeAvailable: boolean;
   usingStatic: boolean;
 } {
+  // Load static paths lazily
+  loadStaticPaths();
+  
   let ffmpegPath: string | null = null;
   let ffprobePath: string | null = null;
   let ffmpegAvailable = false;

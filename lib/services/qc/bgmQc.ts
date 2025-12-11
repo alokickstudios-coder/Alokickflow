@@ -12,9 +12,23 @@ import { getFFmpegPath, getFFprobePath } from './ffmpegPaths';
 
 const execAsync = promisify(exec);
 
-// Get binary paths (works on both local and Vercel)
-const FFMPEG = getFFmpegPath();
-const FFPROBE = getFFprobePath();
+// Lazy getters for binary paths (avoids errors at module load time)
+let _ffmpegPath: string | null = null;
+let _ffprobePath: string | null = null;
+
+function getFFmpeg(): string {
+  if (!_ffmpegPath) {
+    _ffmpegPath = getFFmpegPath();
+  }
+  return _ffmpegPath;
+}
+
+function getFFprobe(): string {
+  if (!_ffprobePath) {
+    _ffprobePath = getFFprobePath();
+  }
+  return _ffprobePath;
+}
 
 export interface BGMQCResult {
   status: 'passed' | 'failed' | 'warning';
@@ -164,7 +178,7 @@ async function getAudioMetadata(filePath: string): Promise<{
 }> {
   try {
     const { stdout } = await execAsync(
-      `"${FFPROBE}" -v error -show_entries stream=channels,sample_rate -show_entries format=duration -of json "${filePath}"`
+      `"${getFFprobe()}" -v error -show_entries stream=channels,sample_rate -show_entries format=duration -of json "${filePath}"`
     );
 
     const data = JSON.parse(stdout);
@@ -196,7 +210,7 @@ async function analyzeAudioSpectrum(filePath: string): Promise<{
     // Use ffmpeg to analyze frequency bands
     // Low: 20-250Hz, Mid: 250-4000Hz, High: 4000-20000Hz
     const { stdout } = await execAsync(
-      `"${FFMPEG}" -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -30`
+      `"${getFFmpeg()}" -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -30`
     );
 
     // Parse RMS and peak levels
@@ -284,7 +298,7 @@ async function analyzeBGMLevels(filePath: string): Promise<{
 }> {
   try {
     const { stdout } = await execAsync(
-      `"${FFMPEG}" -i "${filePath}" -af "volumedetect" -f null - 2>&1 | grep -E "mean_volume|max_volume"`
+      `"${getFFmpeg()}" -i "${filePath}" -af "volumedetect" -f null - 2>&1 | grep -E "mean_volume|max_volume"`
     );
 
     const meanMatch = stdout.match(/mean_volume:\s*([-\d.]+)\s*dB/);

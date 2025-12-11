@@ -10,9 +10,23 @@ import { getFFmpegPath, getFFprobePath } from "../services/qc/ffmpegPaths";
 
 const execAsync = promisify(exec);
 
-// Get binary paths (works on both local and Vercel)
-const FFMPEG = getFFmpegPath();
-const FFPROBE = getFFprobePath();
+// Lazy getters for binary paths (avoids errors at module load time)
+let _ffmpegPath: string | null = null;
+let _ffprobePath: string | null = null;
+
+function getFFmpeg(): string {
+  if (!_ffmpegPath) {
+    _ffmpegPath = getFFmpegPath();
+  }
+  return _ffmpegPath;
+}
+
+function getFFprobe(): string {
+  if (!_ffprobePath) {
+    _ffprobePath = getFFprobePath();
+  }
+  return _ffprobePath;
+}
 
 export interface QCResult {
   status: "passed" | "failed";
@@ -58,7 +72,7 @@ export interface SRTQCResult {
 export async function checkAudioMissing(filePath: string): Promise<QCError | null> {
   try {
     const { stdout } = await execAsync(
-      `"${FFPROBE}" -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${filePath}"`
+      `"${getFFprobe()}" -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${filePath}"`
     );
 
     if (!stdout.trim() || !stdout.includes("audio")) {
@@ -92,7 +106,7 @@ export async function checkMissingDialogue(
   try {
     // Detect silence using ffmpeg
     const { stdout } = await execAsync(
-      `"${FFMPEG}" -i "${filePath}" -af silencedetect=noise=-30dB:d=2 -f null - 2>&1 | grep "silence_start"`
+      `"${getFFmpeg()}" -i "${filePath}" -af silencedetect=noise=-30dB:d=2 -f null - 2>&1 | grep "silence_start"`
     );
 
     const silenceMatches = stdout.match(/silence_start: ([\d.]+)/g);
@@ -134,7 +148,7 @@ export async function checkLipSync(filePath: string): Promise<QCError[]> {
   try {
     // Get audio and video stream info
     const { stdout } = await execAsync(
-      `"${FFPROBE}" -v error -show_entries stream=start_time,codec_type -of csv=p=0 "${filePath}"`
+      `"${getFFprobe()}" -v error -show_entries stream=start_time,codec_type -of csv=p=0 "${filePath}"`
     );
 
     const lines = stdout.trim().split("\n");
@@ -173,7 +187,7 @@ export async function checkLoudnessMix(filePath: string): Promise<QCError[]> {
   try {
     // Analyze loudness using EBU R128
     const { stdout } = await execAsync(
-      `"${FFMPEG}" -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 20 "Input\|Output"`
+      `"${getFFmpeg()}" -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 20 "Input\|Output"`
     );
 
     // Parse loudness values
@@ -223,7 +237,7 @@ export async function checkVideoGlitches(filePath: string): Promise<QCError[]> {
   try {
     // Check for frame drops and errors
     const { stderr } = await execAsync(
-      `"${FFMPEG}" -i "${filePath}" -f null - 2>&1`
+      `"${getFFmpeg()}" -i "${filePath}" -f null - 2>&1`
     );
 
     // Look for common error patterns
@@ -266,7 +280,7 @@ export async function checkMissingBGM(filePath: string): Promise<QCError[]> {
     // Analyze audio spectrum to detect if BGM is present
     // This is a simplified check - in production, use more sophisticated audio analysis
     const { stdout } = await execAsync(
-      `"${FFPROBE}" -v error -show_entries stream=channels -of csv=p=0 "${filePath}" -select_streams a:0`
+      `"${getFFprobe()}" -v error -show_entries stream=channels -of csv=p=0 "${filePath}" -select_streams a:0`
     );
 
     const channels = parseInt(stdout.trim());
@@ -284,7 +298,7 @@ export async function checkMissingBGM(filePath: string): Promise<QCError[]> {
     // Check audio levels throughout the file
     // Low dynamic range might indicate missing BGM
     const { stdout: levels } = await execAsync(
-      `"${FFMPEG}" -i "${filePath}" -af "volumedetect" -f null - 2>&1 | grep "mean_volume"`
+      `"${getFFmpeg()}" -i "${filePath}" -af "volumedetect" -f null - 2>&1 | grep "mean_volume"`
     );
 
     const meanVolumeMatch = levels.match(/mean_volume:\s*([-\d.]+)\s*dB/);
@@ -488,7 +502,7 @@ export async function runVideoQC(filePath: string): Promise<QCResult> {
 
   try {
     const { stdout } = await execAsync(
-      `"${FFPROBE}" -v error -show_entries format=duration -show_entries stream=codec_name,width,height,r_frame_rate,channels,sample_rate -of json "${filePath}"`
+      `"${getFFprobe()}" -v error -show_entries format=duration -show_entries stream=codec_name,width,height,r_frame_rate,channels,sample_rate -of json "${filePath}"`
     );
 
     const probeData = JSON.parse(stdout);
