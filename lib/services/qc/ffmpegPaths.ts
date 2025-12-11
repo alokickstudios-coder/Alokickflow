@@ -2,123 +2,77 @@
  * FFmpeg/FFprobe Path Resolution
  * 
  * This module provides cross-platform paths to ffmpeg and ffprobe binaries.
- * - In development (local): Uses system-installed ffmpeg if available, falls back to static
- * - In production (Vercel): Uses static binaries from npm packages
- * 
- * NOTE: Path resolution is lazy to avoid errors at module load time.
+ * In Docker/production, FFmpeg is installed via apk/apt.
+ * In development, uses system-installed FFmpeg.
  */
 
 import { execSync } from 'child_process';
-import { existsSync } from 'fs';
 
-// Lazy-loaded static binary paths (to avoid errors at module load time)
-let ffmpegStaticPath: string | null | undefined = undefined;
-let ffprobeStaticPath: string | null | undefined = undefined;
-
-function loadStaticPaths() {
-  if (ffmpegStaticPath === undefined) {
-    try {
-      // @ts-ignore - These are optional dependencies
-      ffmpegStaticPath = require('ffmpeg-static');
-    } catch {
-      ffmpegStaticPath = null;
-    }
-  }
-
-  if (ffprobeStaticPath === undefined) {
-    try {
-      // @ts-ignore - These are optional dependencies  
-      ffprobeStaticPath = require('ffprobe-static').path;
-    } catch {
-      ffprobeStaticPath = null;
-    }
-  }
-}
+// Cache for paths
+let _ffmpegPath: string | null = null;
+let _ffprobePath: string | null = null;
 
 /**
- * Check if a system binary exists
+ * Find system binary path
  */
-function systemBinaryExists(name: string): string | null {
+function findBinary(name: string): string | null {
   try {
-    const path = execSync(`which ${name}`, { encoding: 'utf-8' }).trim();
-    if (path && existsSync(path)) {
-      return path;
-    }
+    // Try 'which' (Unix/Linux/Mac)
+    const path = execSync(`which ${name} 2>/dev/null`, { encoding: 'utf-8' }).trim();
+    if (path) return path;
   } catch {
-    // Not found
+    // Try common paths directly
+    const commonPaths = [
+      `/usr/bin/${name}`,
+      `/usr/local/bin/${name}`,
+      `/opt/homebrew/bin/${name}`,
+    ];
+    
+    for (const p of commonPaths) {
+      try {
+        execSync(`test -x "${p}"`, { encoding: 'utf-8' });
+        return p;
+      } catch {
+        // Continue to next path
+      }
+    }
   }
   return null;
 }
 
 /**
  * Get the path to ffmpeg binary
- * Prefers system binary in development, falls back to static
- * Returns null on Vercel if not available (graceful degradation)
  */
 export function getFFmpegPath(): string {
-  // Load static paths lazily
-  loadStaticPaths();
+  if (_ffmpegPath) return _ffmpegPath;
   
-  // In development, prefer system ffmpeg (usually faster)
-  if (process.env.NODE_ENV === 'development') {
-    const systemPath = systemBinaryExists('ffmpeg');
-    if (systemPath) {
-      return systemPath;
-    }
-  }
-
-  // Use static binary
-  if (ffmpegStaticPath) {
-    return ffmpegStaticPath;
-  }
-
-  // Fallback to system path (might work on some systems)
-  const systemPath = systemBinaryExists('ffmpeg');
-  if (systemPath) {
-    return systemPath;
-  }
-
-  // On cloud/serverless, throw a more descriptive error
-  if (process.env.VERCEL || process.env.RENDER || process.env.RAILWAY_ENVIRONMENT) {
-    throw new Error(
-      'FFmpeg not available in serverless environment. Video analysis requires FFmpeg which is not supported in serverless environments. Configure QC_WORKER_URL and QC_WORKER_SECRET to use the dedicated QC Worker.'
-    );
+  const path = findBinary('ffmpeg');
+  if (path) {
+    _ffmpegPath = path;
+    return path;
   }
 
   throw new Error(
-    'FFmpeg not found. Please install ffmpeg-static: npm install ffmpeg-static'
+    'FFmpeg not found. Please ensure FFmpeg is installed in the system. ' +
+    'In Docker, add: RUN apk add --no-cache ffmpeg'
   );
 }
 
 /**
  * Get the path to ffprobe binary
- * Prefers system binary in development, falls back to static
  */
 export function getFFprobePath(): string {
-  // Load static paths lazily
-  loadStaticPaths();
+  if (_ffprobePath) return _ffprobePath;
   
-  // In development, prefer system ffprobe (usually faster)
-  if (process.env.NODE_ENV === 'development') {
-    const systemPath = systemBinaryExists('ffprobe');
-    if (systemPath) {
-      return systemPath;
-    }
-  }
-
-  // Use static binary
-  if (ffprobeStaticPath) {
-    return ffprobeStaticPath;
-  }
-
-  // Fallback to system path (might work on some systems)
-  const systemPath = systemBinaryExists('ffprobe');
-  if (systemPath) {
-    return systemPath;
+  const path = findBinary('ffprobe');
+  if (path) {
+    _ffprobePath = path;
+    return path;
   }
 
   throw new Error(
-    'FFprobe not found. Please install ffprobe-static: npm install ffprobe-static'
+    'FFprobe not found. Please ensure FFmpeg is installed in the system. ' +
+    'In Docker, add: RUN apk add --no-cache ffmpeg'
   );
 }
 
@@ -154,11 +108,7 @@ export function getFFmpegDiagnostics(): {
   ffprobePath: string | null;
   ffmpegAvailable: boolean;
   ffprobeAvailable: boolean;
-  usingStatic: boolean;
 } {
-  // Load static paths lazily
-  loadStaticPaths();
-  
   let ffmpegPath: string | null = null;
   let ffprobePath: string | null = null;
   let ffmpegAvailable = false;
@@ -178,15 +128,10 @@ export function getFFmpegDiagnostics(): {
     // Not available
   }
 
-  const usingStatic = 
-    (ffmpegPath === ffmpegStaticPath) || 
-    (ffprobePath === ffprobeStaticPath);
-
   return {
     ffmpegPath,
     ffprobePath,
     ffmpegAvailable,
     ffprobeAvailable,
-    usingStatic,
   };
 }
