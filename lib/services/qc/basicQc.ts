@@ -144,7 +144,7 @@ export async function runBasicQC(
     console.warn('[BasicQC] FFmpeg not available - returning minimal QC result');
     // Return a minimal result when FFmpeg isn't available
     // This allows QC to "complete" without full analysis
-    return createMinimalQCResult(episodeId, info.fileName);
+    return createMinimalQCResult();
   }
 
   // Run all checks in parallel where possible
@@ -670,23 +670,23 @@ async function getMetadata(filePath: string): Promise<BasicQCResult['metadata']>
  * Create a minimal QC result when FFmpeg is not available
  * This allows QC to "complete" without full analysis
  */
-function createMinimalQCResult(episodeId: string, fileName: string): BasicQCResult {
+function createMinimalQCResult(): BasicQCResult {
   const isVercel = !!process.env.VERCEL;
   const skipMessage = isVercel 
     ? 'FFmpeg not available on Vercel serverless. Full video analysis requires a server with FFmpeg installed.'
     : 'FFmpeg not found. Please install FFmpeg for full video analysis.';
 
   return {
-    episodeId,
-    fileName,
     audioMissing: {
       detected: false,
-      message: skipMessage,
+      error: skipMessage,
     },
     loudness: {
       lufs: null,
+      peak: null,
       status: 'passed',
-      details: { skipped: true, reason: skipMessage },
+      threshold: -23,
+      message: skipMessage,
     },
     silence: {
       detected: false,
@@ -695,18 +695,17 @@ function createMinimalQCResult(episodeId: string, fileName: string): BasicQCResu
     },
     missingDialogue: {
       detected: false,
-      gaps: [],
-      message: skipMessage,
+      segments: [],
     },
     subtitleTiming: {
-      status: 'passed',
-      issues: [{ message: skipMessage }],
-      coverage: 0,
+      status: 'skipped',
+      errors: [],
+      warnings: [{ timestamp: 0, message: skipMessage }],
     },
     missingBGM: {
       detected: false,
       bgmPresence: 100, // Assume OK when we can't check
-      message: skipMessage,
+      issues: [{ timestamp: 0, message: skipMessage }],
     },
     visualQuality: {
       resolution: null,
