@@ -2,13 +2,16 @@
  * GET /api/qc/job-status
  * 
  * Get status of QC jobs for polling
+ * Also triggers processing of queued jobs (polling-based worker)
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
+import { processNextQcJob } from "@/lib/services/qc/worker";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60; // Allow time for processing
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -73,14 +76,47 @@ export async function GET(request: NextRequest) {
       query = query.in("id", ids);
     }
 
-    const { data: jobs, error } = await query;
+    const { data: initialJobs, error } = await query;
 
     if (error) {
       throw error;
     }
 
+    let jobs = initialJobs || [];
+
+    // Check if any of the requested jobs are queued/pending
+    const queuedJobs = jobs.filter((job: any) => 
+      job.status === "queued" || job.status === "pending"
+    );
+    
+    // Process queued jobs synchronously (polling-based worker)
+    // This ensures jobs progress when frontend polls for status
+    if (queuedJobs.length > 0) {
+      console.log(`[JobStatus] Found ${queuedJobs.length} queued job(s), processing...`);
+      try {
+        // Process the first queued job synchronously
+        const processedJob = await processNextQcJob();
+        if (processedJob) {
+          console.log(`[JobStatus] Processed job ${processedJob.id}`);
+          // Re-fetch job status after processing
+          const { data: updatedJobs } = await adminClient
+            .from("qc_jobs")
+            .select("id, status, error_message, result_json, created_at, updated_at, file_name, delivery_id")
+            .eq("organisation_id", profile.organization_id)
+            .in("id", jobs.map((j: any) => j.id));
+          
+          if (updatedJobs) {
+            jobs = updatedJobs;
+          }
+        }
+      } catch (err: any) {
+        console.error("[JobStatus] Processing error:", err.message);
+        // Continue with returning current status even if processing failed
+      }
+    }
+
     // Format response
-    const formatted = (jobs || []).map((job: any) => {
+    const formatted = jobs.map((job: any) => {
       const result = job.result_json || {};
       // Extract status from result_json if available
       const qcStatus = result.status || (result.basicQC ? "needs_review" : "processing");
