@@ -3,16 +3,13 @@
  * 
  * POST - Run Creative QC analysis for a specific job
  * 
- * Uses Groq Whisper for transcription and DeepSeek for SPI analysis.
- * Does NOT use Gemini.
+ * Uses Groq Whisper for transcription and DeepSeek/Groq for SPI analysis.
  * 
  * Enterprise only - requires creative_qc_spi feature and toggle enabled
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { createClient as createAdminClient } from "@supabase/supabase-js";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { getAuthenticatedSession, getAdminClient } from "@/lib/api/auth-helpers";
 import {
   runCreativeQCAnalysis,
   isCreativeQCAvailable,
@@ -20,15 +17,6 @@ import {
   extractTranscriptFromSubtitles,
   SPIAnalysisInput,
 } from "@/lib/services/spi/engine";
-
-function getAdminClient(): SupabaseClient | null {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !supabaseServiceKey) return null;
-  return createAdminClient(supabaseUrl, supabaseServiceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
 
 /**
  * POST /api/qc/creative/analyze
@@ -39,38 +27,19 @@ function getAdminClient(): SupabaseClient | null {
  * 1. Check Enterprise + feature + toggle
  * 2. Fetch job data (transcript, subtitles, metadata)
  * 3. If no transcript, use Groq Whisper to transcribe media
- * 4. Run DeepSeek SPI analysis
+ * 4. Run SPI analysis (DeepSeek or Groq fallback)
  * 5. Store results in database
  * 
  * Body: { jobId: string, forceRerun?: boolean }
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase: SupabaseClient = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+    const session = await getAuthenticatedSession();
+    if (!session.success) {
+      return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
     }
 
-    // Get user's organization
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile?.organization_id) {
-      return NextResponse.json(
-        { error: "Organization not found" },
-        { status: 404 }
-      );
-    }
-
-    const organizationId = profile.organization_id;
+    const { user, organizationId } = session.data!;
 
     // Check if Creative QC is available
     const availability = await isCreativeQCAvailable(organizationId);

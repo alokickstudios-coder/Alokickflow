@@ -2,7 +2,7 @@
  * SPI Providers Index
  * 
  * Provider factory and exports for transcription and SPI analysis.
- * Default configuration uses Groq Whisper + DeepSeek.
+ * Default configuration uses Groq Whisper + DeepSeek (with Groq fallback).
  */
 
 import {
@@ -15,6 +15,7 @@ import {
 } from "./types";
 import { GroqWhisperTranscriptionProvider, groqWhisperProvider } from "./groqWhisper";
 import { DeepSeekSpiProvider, deepseekSpiProvider } from "./deepseekSpi";
+import { GroqSpiProvider, groqSpiProvider } from "./groqSpi";
 
 // Re-export types
 export * from "./types";
@@ -22,6 +23,7 @@ export * from "./types";
 // Re-export provider implementations
 export { GroqWhisperTranscriptionProvider, groqWhisperProvider } from "./groqWhisper";
 export { DeepSeekSpiProvider, deepseekSpiProvider } from "./deepseekSpi";
+export { GroqSpiProvider, groqSpiProvider } from "./groqSpi";
 
 /**
  * Provider Factory
@@ -59,26 +61,34 @@ class SpiProviderFactory {
 
   /**
    * Get the configured SPI provider
+   * Falls back to Groq if DeepSeek is not configured
    */
   getSpiProvider(): SpiProvider {
     if (this.spiProvider) {
       return this.spiProvider;
     }
 
-    switch (this.config.spi.provider) {
-      case "deepseek":
-        this.spiProvider = deepseekSpiProvider;
-        break;
-      default:
-        // Default to DeepSeek
-        this.spiProvider = deepseekSpiProvider;
+    // Try DeepSeek first
+    if (deepseekSpiProvider.isConfigured()) {
+      this.spiProvider = deepseekSpiProvider;
+      return this.spiProvider;
     }
 
+    // Fallback to Groq for SPI analysis
+    if (groqSpiProvider.isConfigured()) {
+      console.log("[SPI] DeepSeek not configured, using Groq for SPI analysis");
+      this.spiProvider = groqSpiProvider;
+      return this.spiProvider;
+    }
+
+    // Default to DeepSeek (will show error when used)
+    this.spiProvider = deepseekSpiProvider;
     return this.spiProvider;
   }
 
   /**
    * Check if all required providers are configured
+   * Now checks for Groq fallback for SPI
    */
   isFullyConfigured(): { configured: boolean; missing: string[] } {
     const missing: string[] = [];
@@ -88,9 +98,12 @@ class SpiProviderFactory {
       missing.push(`Transcription provider (${transcription.name})`);
     }
 
-    const spi = this.getSpiProvider();
-    if (!spi.isConfigured()) {
-      missing.push(`SPI provider (${spi.name})`);
+    // Check if either DeepSeek or Groq is configured for SPI
+    const hasDeepSeek = deepseekSpiProvider.isConfigured();
+    const hasGroq = groqSpiProvider.isConfigured();
+    
+    if (!hasDeepSeek && !hasGroq) {
+      missing.push(`SPI provider (DeepSeek or Groq)`);
     }
 
     return {

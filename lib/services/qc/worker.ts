@@ -154,6 +154,11 @@ export async function processNextQcJob(): Promise<QcJobRow | null> {
 
     logQCEvent.qcCompleted(job.id, qcResult.status === "passed" ? "passed" : "failed", qcResult.score, job.organisation_id);
 
+    // Trigger Creative QC if enabled for this organization (non-blocking)
+    triggerCreativeQC(job.id, job.organisation_id, qcResult, adminClient).catch((err) => {
+      console.warn(`[QCWorker] Creative QC trigger failed for job ${job.id}:`, err.message);
+    });
+
     console.log(`[QCWorker] Successfully completed job ${job.id}`);
     return { ...job, status: "completed", result_json: qcResult };
   } catch (error: any) {
@@ -600,5 +605,125 @@ async function updateDeliveryRecord(
       updated_at: new Date().toISOString(),
     })
     .eq("id", deliveryId);
+}
+
+/**
+ * Trigger Creative QC analysis after basic QC completes
+ * This is non-blocking and runs asynchronously
+ */
+async function triggerCreativeQC(
+  jobId: string,
+  organizationId: string,
+  qcResult: any,
+  adminClient: ReturnType<typeof getAdminClient>
+) {
+  try {
+    // Check if Creative QC is available and enabled
+    const { isCreativeQCAvailable, getCreativeQCSettings, runCreativeQCAnalysis, extractTranscriptFromSubtitles } = 
+      await import("@/lib/services/spi/engine");
+
+    const availability = await isCreativeQCAvailable(organizationId);
+    if (!availability.available) {
+      console.log(`[QCWorker] Creative QC not available for org ${organizationId}: ${availability.reason}`);
+      return;
+    }
+
+    const settings = await getCreativeQCSettings(organizationId);
+    if (!settings?.enabled) {
+      console.log(`[QCWorker] Creative QC not enabled for org ${organizationId}`);
+      return;
+    }
+
+    // Mark Creative QC as running
+    await adminClient!
+      .from("qc_jobs")
+      .update({
+        creative_qc_status: "running",
+        creative_qc_started_at: new Date().toISOString(),
+      })
+      .eq("id", jobId);
+
+    console.log(`[QCWorker] Starting Creative QC for job ${jobId}`);
+
+    // Get transcript from QC result if available
+    let transcript = qcResult.basicQC?.transcript?.text || qcResult.transcript?.text || "";
+
+    // Try to get subtitle content from delivery
+    const { data: job } = await adminClient!
+      .from("qc_jobs")
+      .select("delivery:deliveries(subtitle_content), project:projects(name, code)")
+      .eq("id", jobId)
+      .single();
+
+    let subtitleContent = "";
+    // Handle the joined data (could be array or object depending on Supabase version)
+    const delivery = Array.isArray(job?.delivery) ? job.delivery[0] : job?.delivery;
+    const project = Array.isArray(job?.project) ? job.project[0] : job?.project;
+    
+    if (delivery?.subtitle_content) {
+      subtitleContent = delivery.subtitle_content;
+      if (!transcript) {
+        transcript = extractTranscriptFromSubtitles(subtitleContent);
+      }
+    }
+
+    // Run Creative QC analysis
+    const creativeResult = await runCreativeQCAnalysis({
+      jobId,
+      transcript,
+      subtitleContent,
+      context: {
+        projectName: project?.name,
+        seriesName: project?.code,
+        targetAudience: settings.targetAudience,
+        brandGuidelines: settings.brandGuidelines,
+        platformType: settings.platformType,
+        duration: qcResult.basicQC?.metadata?.duration,
+      },
+      audioAnalysis: {
+        hasDialogue: !qcResult.basicQC?.audioMissing?.detected,
+        hasBGM: qcResult.bgm?.bgmDetected ?? false,
+        loudnessLUFS: qcResult.basicQC?.loudness?.lufs,
+        silencePercentage: qcResult.basicQC?.silence?.totalSilenceDuration 
+          ? (qcResult.basicQC.silence.totalSilenceDuration / (qcResult.basicQC.metadata?.duration || 1)) * 100
+          : undefined,
+      },
+    }, settings);
+
+    // Update job with Creative QC results
+    const updateData: Record<string, any> = {
+      creative_qc_completed_at: new Date().toISOString(),
+    };
+
+    if (creativeResult.status === "completed") {
+      updateData.creative_qc_status = "completed";
+      updateData.creative_qc_overall_score = creativeResult.overall_creative_score;
+      updateData.creative_qc_overall_risk_score = creativeResult.overall_risk_score;
+      updateData.creative_qc_overall_brand_fit_score = creativeResult.overall_brand_fit_score;
+      updateData.creative_qc_parameters = creativeResult.parameters;
+      updateData.creative_qc_summary = creativeResult.summary;
+      updateData.creative_qc_recommendations = creativeResult.recommendations;
+      console.log(`[QCWorker] Creative QC completed for job ${jobId}: score ${creativeResult.overall_creative_score}`);
+    } else {
+      updateData.creative_qc_status = "failed";
+      updateData.creative_qc_error = creativeResult.error || "Analysis failed";
+      console.log(`[QCWorker] Creative QC failed for job ${jobId}: ${creativeResult.error}`);
+    }
+
+    await adminClient!.from("qc_jobs").update(updateData).eq("id", jobId);
+
+  } catch (error: any) {
+    console.error(`[QCWorker] Creative QC error for job ${jobId}:`, error);
+    
+    // Mark as failed
+    await adminClient!
+      .from("qc_jobs")
+      .update({
+        creative_qc_status: "failed",
+        creative_qc_error: error.message || "Unknown error",
+        creative_qc_completed_at: new Date().toISOString(),
+      })
+      .eq("id", jobId);
+  }
 }
 
