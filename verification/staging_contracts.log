@@ -1,0 +1,45 @@
+# Staging Contract Test Log
+# Date: 2024-12-12
+# Status: PENDING - Operator must run after staging deploy
+
+# ============================================
+# OPERATOR COMMAND:
+# ============================================
+#
+# # Run contract tests against staging
+# npm test -- --testPathPattern=contracts 2>&1 | tee verification/staging_contracts.log
+#
+# ============================================
+
+# Contract tests validate API response schemas:
+# - QCJob schema validation
+# - HealthResponse schema validation
+# - ErrorResponse schema validation
+# - DLQEntry schema validation
+# - QCResult schema validation
+
+# Expected output:
+# PASS tests/contracts/api-contracts.test.ts
+#   API Contract Tests
+#     QCJob Schema
+#       ✓ should validate a valid QC job
+#       ✓ should reject job with invalid status
+#       ✓ should reject job with progress > 100
+#       ✓ should reject job without required fields
+#     HealthResponse Schema
+#       ✓ should validate a valid health response
+#       ✓ should reject health response with invalid status
+#     ErrorResponse Schema
+#       ✓ should validate a valid error response
+#       ✓ should reject error response without error field
+#     DLQEntry Schema
+#       ✓ should validate a valid DLQ entry
+#       ✓ should reject DLQ entry with invalid status
+
+# Expected summary:
+# Test Suites: 1 passed, 1 total
+# Tests:       10 passed, 10 total
+
+# ============================================
+# STATUS: AWAITING_OPERATOR
+# ============================================

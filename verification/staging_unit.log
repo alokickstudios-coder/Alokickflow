@@ -1,0 +1,42 @@
+# Staging Unit Test Log
+# Date: 2024-12-12
+# Status: PENDING - Operator must run after staging deploy
+
+# ============================================
+# OPERATOR COMMAND:
+# ============================================
+#
+# # Install dependencies first
+# sudo chown -R $(whoami) ~/.npm
+# npm install -D ts-jest @types/jest jest ajv ajv-formats
+#
+# # Run unit tests
+# npm test 2>&1 | tee verification/staging_unit.log
+#
+# ============================================
+
+# Expected test suites:
+# - tests/qc-worker.test.ts (12 tests)
+# - tests/contracts/api-contracts.test.ts (10 tests)
+
+# Expected output format:
+# PASS tests/qc-worker.test.ts
+#   QC Worker Error Handling
+#     ✓ should NOT silently return false on database error
+#     ✓ should log error when database check fails
+#     ✓ should detect missed heartbeat (simulated)
+#     ...
+#
+# PASS tests/contracts/api-contracts.test.ts
+#   API Contract Tests
+#     ✓ should validate a valid QC job
+#     ...
+
+# Expected summary:
+# Test Suites: 2 passed, 2 total
+# Tests:       22 passed, 22 total
+# Time:        ~2s
+
+# ============================================
+# STATUS: AWAITING_OPERATOR
+# ============================================

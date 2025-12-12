@@ -277,6 +277,43 @@ FEATURE_FLAG_JOB_HEARTBEAT=false
 
 ---
 
+## 13. Operator Instructions
+
+### Immediate Next Steps (After PR Review)
+
+1. **Run staging deployment script:**
+   ```bash
+   export DB_STAGING_URL="postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres"
+   export AUTH_TOKEN="your-auth-token"
+   export APPROVED_BY="dev-lead,ops-oncall,product-owner"
+   ./operator_run_staging.sh
+   ```
+
+2. **Attach verification bundle to PR:**
+   ```bash
+   # The script creates: verification_bundle_YYYYMMDD_HHMMSS.tgz
+   # Upload this to the PR as an attachment
+   ```
+
+3. **Wait for 3 approvals:**
+   - [ ] dev-lead
+   - [ ] ops-oncall
+   - [ ] product-owner
+
+4. **After approvals, run production migration:**
+   ```bash
+   # Follow migration/operator_instructions.md step-by-step
+   # NEVER run before all 3 approvals!
+   ```
+
+5. **Execute canary rollout:**
+   ```bash
+   # Follow canary/ci/canary_rollout.sh
+   # Start with Stage 0 (flags OFF), then proceed through stages
+   ```
+
+---
+
 **ONE-LINER FOR TICKET:**
 
 > Do NOT run production migrations or toggle flags to ON until dev-lead, ops-oncall and product-owner check these artifacts and grant approval; follow `migration/operator_instructions.md` step-by-step.

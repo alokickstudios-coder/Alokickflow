@@ -1,0 +1,71 @@
+# Migration Dry-Run Log: 001_create_job_dlq.sql
+# Target: STAGING DATABASE (Dry-Run)
+# Date: 2024-12-12
+# Status: SIMULATED - Operator must run on actual staging DB
+
+# ============================================
+# OPERATOR COMMAND TO RUN ON STAGING:
+# ============================================
+# 
+# export DB_STAGING_URL="postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres"
+# psql $DB_STAGING_URL -f migrations/001_create_job_dlq.sql 2>&1 | tee migrations/dry_run_001.log
+#
+# ============================================
+
+# Expected output on staging:
+-- CREATE TABLE IF NOT EXISTS job_dlq (...)
+-- Expected: CREATE TABLE
+-- Expected runtime: < 1 second
+
+-- CREATE INDEX IF NOT EXISTS idx_job_dlq_job_id
+-- Expected: CREATE INDEX (x6 indexes)
+-- Expected runtime: < 100ms each
+
+-- CREATE FUNCTION update_job_dlq_updated_at
+-- Expected: CREATE FUNCTION
+
+-- CREATE TRIGGER job_dlq_updated_at  
+-- Expected: CREATE TRIGGER
+
+-- ALTER TABLE job_dlq ENABLE ROW LEVEL SECURITY
+-- Expected: ALTER TABLE
+
+-- CREATE POLICY "Users can view own org DLQ entries"
+-- Expected: CREATE POLICY (x2 policies)
+
+-- GRANT ALL ON job_dlq TO service_role
+-- Expected: GRANT
+
+# ============================================
+# VALIDATION QUERIES (run after migration):
+# ============================================
+# SELECT table_name FROM information_schema.tables WHERE table_name = 'job_dlq';
+# SELECT indexname FROM pg_indexes WHERE tablename = 'job_dlq';
+# SELECT COUNT(*) FROM job_dlq;  -- Should be 0
+
+# ============================================
+# LOCK ANALYSIS:
+# ============================================
+# Lock type: None (creating new table)
+# Lock duration: N/A
+# Impact on existing tables: None
+# Safe to run during production: YES
+
+# ============================================
+# IDEMPOTENCY:
+# ============================================
+# Uses IF NOT EXISTS - safe to re-run
+# Idempotent: YES
+
+# ============================================
+# ROLLBACK SQL:
+# ============================================
+# DROP TRIGGER IF EXISTS job_dlq_updated_at ON job_dlq;
+# DROP FUNCTION IF EXISTS update_job_dlq_updated_at();
+# DROP POLICY IF EXISTS "Users can view own org DLQ entries" ON job_dlq;
+# DROP POLICY IF EXISTS "Admins can manage DLQ entries" ON job_dlq;
+# DROP TABLE IF EXISTS job_dlq;
+
+# ============================================
+# DRY-RUN STATUS: READY FOR OPERATOR
+# ============================================

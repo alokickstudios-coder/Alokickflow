@@ -1,0 +1,53 @@
+# DLQ Feature Test Log
+# Date: 2024-12-12
+# Status: PENDING - Operator must run after staging deploy with DLQ_ENABLED=true
+
+# ============================================
+# TEST PROCEDURE:
+# ============================================
+#
+# 1. Ensure staging has: FEATURE_FLAG_DLQ_ENABLED=true
+#
+# 2. Inject a failing job via debug endpoint:
+#    curl -X POST "https://alokickflow.onrender.com/api/qc/debug" \
+#      -H "Authorization: Bearer $AUTH_TOKEN" \
+#      -H "Content-Type: application/json" \
+#      -d '{"action": "inject_failing_job", "fail_reason": "DLQ_TEST"}'
+#
+# 3. Wait for job to fail after retries (max_retries=3, ~2-4 minutes)
+#
+# 4. Check DLQ stats:
+#    curl -s "https://alokickflow.onrender.com/api/admin/dlq?stats=true" \
+#      -H "Authorization: Bearer $AUTH_TOKEN" | jq
+#
+# 5. Verify entry exists:
+#    curl -s "https://alokickflow.onrender.com/api/admin/dlq?limit=5" \
+#      -H "Authorization: Bearer $AUTH_TOKEN" | jq
+#
+# ============================================
+
+# Expected results:
+# - Job should fail after configured retries
+# - DLQ entry should be created with:
+#   - failure_reason containing "DLQ_TEST" or specific error
+#   - failure_code: appropriate code (PROCESSING_ERROR, TIMEOUT, etc.)
+#   - status: "pending" or "abandoned"
+#   - attempt_count: >= max_retries
+
+# Verification queries:
+# 1. DLQ stats should show total > 0
+# 2. DLQ entry should have correct job_id
+# 3. DLQ entry metadata should contain job context
+
+# ============================================
+# PASS CRITERIA:
+# ============================================
+# [ ] Job failed after configured retries
+# [ ] DLQ entry created
+# [ ] failure_reason is descriptive
+# [ ] failure_code is appropriate
+# [ ] Entry appears in /api/admin/dlq list
+
+# ============================================
+# STATUS: AWAITING_OPERATOR
+# ============================================

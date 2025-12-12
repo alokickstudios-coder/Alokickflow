@@ -1,0 +1,64 @@
+# Heartbeat/Watchdog Feature Test Log
+# Date: 2024-12-12
+# Status: PENDING - Operator must run after staging deploy with JOB_HEARTBEAT=true
+
+# ============================================
+# TEST PROCEDURE:
+# ============================================
+#
+# 1. Ensure staging has: FEATURE_FLAG_JOB_HEARTBEAT=true
+#
+# 2. Create a job that will "hang" (simulate missed heartbeat):
+#    - Start a QC job
+#    - Manually stop the worker process OR
+#    - Use debug endpoint to simulate stall:
+#      curl -X POST "https://alokickflow.onrender.com/api/qc/debug" \
+#        -H "Authorization: Bearer $AUTH_TOKEN" \
+#        -H "Content-Type: application/json" \
+#        -d '{"action": "simulate_stuck_job"}'
+#
+# 3. Wait for heartbeat timeout (HEARTBEAT_THRESHOLD_MS = 120000ms = 2 min)
+#
+# 4. Check if watchdog detected and handled:
+#    curl -s "https://alokickflow.onrender.com/api/qc/debug" \
+#      -H "Authorization: Bearer $AUTH_TOKEN" | jq '.watchdogMetrics'
+#
+# 5. Verify job was marked FAILED and moved to DLQ:
+#    curl -s "https://alokickflow.onrender.com/api/admin/dlq?stats=true" \
+#      -H "Authorization: Bearer $AUTH_TOKEN" | jq
+#
+# ============================================
+
+# Expected behavior:
+# - After 2 minutes without heartbeat, watchdog should:
+#   1. Detect the stuck job
+#   2. Mark job status = "failed"
+#   3. Set error_message containing "Watchdog" or "heartbeat"
+#   4. Move job to DLQ with failure_code = "TIMEOUT"
+
+# Watchdog metrics to verify:
+# - heartbeatsSent: should increase during normal operation
+# - stuckJobsDetected: should increment when test job goes stale
+# - jobsMovedToDLQ: should increment when job is moved
+
+# ============================================
+# PASS CRITERIA:
+# ============================================
+# [ ] Job runs for > 2 minutes without heartbeat
+# [ ] Watchdog detects job as stuck
+# [ ] Job status changes to "failed"
+# [ ] Job error_message contains heartbeat/watchdog reference
+# [ ] Job moved to DLQ with TIMEOUT failure_code
+# [ ] Watchdog metrics show detection
+
+# ============================================
+# CONFIGURATION:
+# ============================================
+# HEARTBEAT_INTERVAL_MS = 30000 (30 seconds)
+# HEARTBEAT_THRESHOLD_MS = 120000 (2 minutes)
+# WATCHDOG_CHECK_INTERVAL_MS = 60000 (1 minute)
+# HEARTBEAT_MAX_MISSES = 2
+
+# ============================================
+# STATUS: AWAITING_OPERATOR
+# ============================================

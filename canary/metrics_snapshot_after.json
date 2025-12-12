@@ -1,0 +1,48 @@
+{
+  "_comment": "TEMPLATE - Operator must capture actual metrics after staging deploy",
+  "timestamp": "YYYY-MM-DDTHH:MM:SSZ",
+  "phase": "post_staging_canary",
+  "app_url": "https://alokickflow.onrender.com",
+  "capture_instructions": [
+    "1. Deploy branch to staging with feature flags ON",
+    "2. Run: curl -s $STAGING_URL/api/health/full | jq",
+    "3. Run load test: k6 run tools/load/k6-qc-load-test.js",
+    "4. Capture this file with actual values"
+  ],
+  "health": {
+    "status": "PENDING_STAGING_DEPLOY",
+    "timestamp": null,
+    "services": []
+  },
+  "metrics": {
+    "error_rate_percent": null,
+    "latency_p50_ms": null,
+    "latency_p99_ms": null,
+    "requests_per_minute": null,
+    "dlq_length": null,
+    "active_jobs": null,
+    "queued_jobs": null,
+    "completed_jobs_24h": null,
+    "failed_jobs_24h": null,
+    "heartbeat_misses": null
+  },
+  "feature_flags": {
+    "DLQ_ENABLED": true,
+    "JOB_HEARTBEAT": true,
+    "STRUCTURED_ERROR_HANDLING": true,
+    "STRUCTURED_LOGGING": true
+  },
+  "comparison_to_baseline": {
+    "error_rate_change_percent": null,
+    "latency_p99_change_percent": null,
+    "threshold_breached": null
+  },
+  "thresholds": {
+    "max_error_rate_percent": 5.0,
+    "max_latency_p99_ms": 500,
+    "max_dlq_length": 10,
+    "max_latency_regression_percent": 15,
+    "max_heartbeat_misses_per_hour": 5
+  },
+  "operator_action": "CAPTURE_AFTER_STAGING_DEPLOY"
+}

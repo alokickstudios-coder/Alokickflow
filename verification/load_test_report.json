@@ -1,0 +1,60 @@
+{
+  "_comment": "TEMPLATE - Operator must run k6 load test and capture actual results",
+  "test_config": {
+    "tool": "k6",
+    "script": "tools/load/k6-qc-load-test.js",
+    "vus": 100,
+    "duration": "5m",
+    "target_url": "https://alokickflow.onrender.com"
+  },
+  "operator_command": [
+    "# Install k6 first:",
+    "# brew install k6  # macOS",
+    "# or: snap install k6  # Linux",
+    "",
+    "# Run load test:",
+    "k6 run --vus 100 --duration 5m tools/load/k6-qc-load-test.js",
+    "",
+    "# With custom URL:",
+    "k6 run --vus 100 --duration 5m -e BASE_URL=https://alokickflow.onrender.com tools/load/k6-qc-load-test.js"
+  ],
+  "status": "PENDING_OPERATOR_RUN",
+  "results": {
+    "http_reqs": {
+      "count": null,
+      "rate": null
+    },
+    "http_req_duration": {
+      "avg": null,
+      "min": null,
+      "med": null,
+      "max": null,
+      "p90": null,
+      "p95": null,
+      "p99": null
+    },
+    "http_req_failed": {
+      "rate": null,
+      "passes": null
+    },
+    "vus": null,
+    "vus_max": 100,
+    "iterations": null
+  },
+  "custom_metrics": {
+    "qc_jobs_created": null,
+    "qc_jobs_completed": null,
+    "qc_jobs_failed": null,
+    "job_duration_ms": null
+  },
+  "thresholds": {
+    "http_req_duration_p95_under_2s": null,
+    "http_req_failed_under_5pct": null,
+    "error_rate_under_5pct": null
+  },
+  "pass_criteria": {
+    "p95_latency_under_2000ms": "PENDING",
+    "error_rate_under_5_percent": "PENDING",
+    "all_thresholds_pass": "PENDING"
+  }
+}

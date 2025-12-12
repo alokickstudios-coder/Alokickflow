@@ -1,0 +1,58 @@
+# Migration Dry-Run Log: 002_add_heartbeat_column.sql
+# Target: STAGING DATABASE (Dry-Run)
+# Date: 2024-12-12
+# Status: SIMULATED - Operator must run on actual staging DB
+
+# ============================================
+# OPERATOR COMMAND TO RUN ON STAGING:
+# ============================================
+# 
+# export DB_STAGING_URL="postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres"
+# psql $DB_STAGING_URL -f migrations/002_add_heartbeat_column.sql 2>&1 | tee migrations/dry_run_002.log
+#
+# ============================================
+
+# Expected output on staging:
+-- ALTER TABLE qc_jobs ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMP WITH TIME ZONE;
+-- Expected: ALTER TABLE
+-- Expected runtime: < 5 seconds
+
+-- CREATE INDEX IF NOT EXISTS idx_qc_jobs_heartbeat
+-- Expected: CREATE INDEX (x2 indexes)
+-- Expected runtime: Depends on table size (< 30s for < 100k rows)
+
+-- COMMENT ON COLUMN qc_jobs.last_heartbeat_at
+-- Expected: COMMENT
+
+# ============================================
+# VALIDATION QUERIES (run after migration):
+# ============================================
+# SELECT column_name, data_type FROM information_schema.columns 
+#   WHERE table_name = 'qc_jobs' AND column_name = 'last_heartbeat_at';
+# SELECT indexname FROM pg_indexes WHERE indexname LIKE '%heartbeat%';
+
+# ============================================
+# LOCK ANALYSIS:
+# ============================================
+# Lock type: ACCESS EXCLUSIVE (brief, during ALTER TABLE)
+# Lock duration: < 1ms for adding nullable column
+# Impact on existing tables: qc_jobs will be briefly locked
+# Safe to run during low-traffic: YES
+# Recommended: Run during maintenance window or low-traffic period
+
+# ============================================
+# IDEMPOTENCY:
+# ============================================
+# Uses ADD COLUMN IF NOT EXISTS - safe to re-run
+# Idempotent: YES
+
+# ============================================
+# ROLLBACK SQL:
+# ============================================
+# DROP INDEX IF EXISTS idx_qc_jobs_running_heartbeat;
+# DROP INDEX IF EXISTS idx_qc_jobs_heartbeat;
+# ALTER TABLE qc_jobs DROP COLUMN IF EXISTS last_heartbeat_at;
+
+# ============================================
+# DRY-RUN STATUS: READY FOR OPERATOR
+# ============================================
