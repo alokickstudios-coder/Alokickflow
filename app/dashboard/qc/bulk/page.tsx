@@ -337,8 +337,13 @@ export default function BulkQCPage() {
         });
       }
 
-      // Use API route to delete
-      await fetch(`/api/data/deliveries?id=${result.id}`, { method: "DELETE" });
+      // Use qc-jobs API to delete (handles both qc_job and delivery deletion)
+      const response = await fetch(`/api/data/qc-jobs?id=${result.id}`, { method: "DELETE" });
+      
+      if (!response.ok) {
+        // Fallback to deliveries API if qc-jobs fails (might be a delivery-only record)
+        await fetch(`/api/data/deliveries?id=${result.id}`, { method: "DELETE" });
+      }
 
       toast({ title: "File deleted", description: `${result.original_file_name || result.file_name} has been removed.` });
       fetchResults();
