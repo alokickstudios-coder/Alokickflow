@@ -118,11 +118,50 @@ export default function QCResultsPage() {
     }
   }, []);
 
+  // Fast progress polling for active jobs
+  const fetchProgress = useCallback(async () => {
+    const activeJobs = jobs.filter(j => 
+      j.status === "running" || j.status === "queued" || j.status === "pending"
+    );
+    if (activeJobs.length === 0) return;
+
+    try {
+      const res = await fetch("/api/qc/progress");
+      if (!res.ok) return;
+      const data = await res.json();
+      
+      if (data.progress && data.progress.length > 0) {
+        setJobs(prev => prev.map(job => {
+          const update = data.progress.find((p: any) => p.id === job.id);
+          if (update) {
+            return { ...job, progress: update.progress, status: update.status };
+          }
+          return job;
+        }));
+      }
+    } catch (e) {
+      // Ignore progress fetch errors
+    }
+  }, [jobs]);
+
   useEffect(() => {
     fetchQCJobs();
-    const interval = setInterval(fetchQCJobs, 5000);
-    return () => clearInterval(interval);
+    // Full refresh every 5 seconds
+    const fullInterval = setInterval(fetchQCJobs, 5000);
+    return () => clearInterval(fullInterval);
   }, [fetchQCJobs]);
+
+  // Fast progress polling when jobs are active (every 1 second)
+  useEffect(() => {
+    const hasActiveJobs = jobs.some(j => 
+      j.status === "running" || j.status === "queued" || j.status === "pending"
+    );
+    
+    if (hasActiveJobs) {
+      const progressInterval = setInterval(fetchProgress, 1000);
+      return () => clearInterval(progressInterval);
+    }
+  }, [jobs, fetchProgress]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {

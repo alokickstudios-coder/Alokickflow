@@ -9,7 +9,7 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
-import { runQcForJob, QcJobContext } from "./engine";
+import { runQcForJob, QcJobContext, QCFeatures } from "./engine";
 import { getEnabledQCFeatures } from "./engine";
 import { logQCEvent } from "@/lib/utils/qc-logger";
 import { decrypt } from "@/lib/utils/crypto";
@@ -350,14 +350,32 @@ async function isJobCancelled(
 
 /**
  * Process a single QC job directly (called from batch)
- * Includes cancellation checks at each step
+ * Includes cancellation checks and granular progress updates
  */
 async function processQcJobDirect(
   job: QcJobRow,
   adminClient: ReturnType<typeof getAdminClient>
 ): Promise<{ status: string } | null> {
-  console.log(`[QCWorker] Processing job ${job.id}`);
+  console.log(`[QCWorker] Processing job ${job.id}: ${job.file_name}`);
+  const startTime = Date.now();
   
+  // Progress callback for real-time updates
+  const updateProgress = async (percent: number, stage?: string) => {
+    try {
+      await adminClient!
+        .from("qc_jobs")
+        .update({ 
+          progress: percent, 
+          updated_at: new Date().toISOString(),
+          ...(stage && { processing_stage: stage })
+        })
+        .eq("id", job.id);
+      console.log(`[QCWorker] Job ${job.id}: ${percent}%${stage ? ` (${stage})` : ""}`);
+    } catch (e) {
+      // Ignore progress update errors
+    }
+  };
+
   try {
     // Check if already cancelled before starting
     if (await isJobCancelled(job.id, adminClient)) {
@@ -365,47 +383,57 @@ async function processQcJobDirect(
       return { status: "cancelled" };
     }
 
-    // Update progress to 10%
-    await updateJobProgress(job.id, 10, adminClient!);
+    // Stage 1: Initialize (5%)
+    await updateProgress(5, "initializing");
 
     // Get enabled features
     const featuresEnabled = await getEnabledQCFeatures(job.organisation_id);
+    await updateProgress(8, "features_loaded");
 
-    // Check cancellation after features load
+    // Check cancellation
     if (await isJobCancelled(job.id, adminClient)) {
       console.log(`[QCWorker] Job ${job.id} cancelled during feature check`);
       return { status: "cancelled" };
     }
 
-    // Update progress to 20%
-    await updateJobProgress(job.id, 20, adminClient!);
-
-    // Resolve file
-    const context = await resolveFileContext(job, adminClient);
+    // Stage 2: File Resolution (10-35%)
+    await updateProgress(10, "downloading");
     
-    // Check cancellation after file download (important - saves resources)
+    // Resolve file with progress callback
+    const context = await resolveFileContextWithProgress(job, adminClient, async (downloadPercent) => {
+      // Map download progress (0-100) to our range (10-35%)
+      const mappedProgress = 10 + Math.floor(downloadPercent * 0.25);
+      await updateProgress(mappedProgress, "downloading");
+    });
+    
+    await updateProgress(35, "download_complete");
+
+    // Check cancellation after file download
     if (await isJobCancelled(job.id, adminClient)) {
       console.log(`[QCWorker] Job ${job.id} cancelled after download`);
-      // Clean up downloaded file
       if (context.cleanup) await context.cleanup();
       return { status: "cancelled" };
     }
 
-    // Update progress to 40%
-    await updateJobProgress(job.id, 40, adminClient!);
+    // Stage 3: Basic QC Analysis (40-75%)
+    await updateProgress(40, "analyzing");
+    
+    // Run QC with progress callback
+    const qcResult = await runQcForJobWithProgress(job, context, featuresEnabled, async (qcPercent, qcStage) => {
+      // Map QC progress (0-100) to our range (40-75%)
+      const mappedProgress = 40 + Math.floor(qcPercent * 0.35);
+      await updateProgress(mappedProgress, qcStage || "analyzing");
+    });
 
-    // Run QC
-    const qcResult = await runQcForJob(job, context, featuresEnabled);
-
-    // Final cancellation check before saving results
+    // Check cancellation before saving
     if (await isJobCancelled(job.id, adminClient)) {
       console.log(`[QCWorker] Job ${job.id} cancelled after QC processing`);
       if (context.cleanup) await context.cleanup();
       return { status: "cancelled" };
     }
 
-    // Update progress to 90%
-    await updateJobProgress(job.id, 90, adminClient!);
+    // Stage 4: Saving Results (80%)
+    await updateProgress(80, "saving_results");
 
     // Save results
     await adminClient!
@@ -415,24 +443,39 @@ async function processQcJobDirect(
         result_json: qcResult,
         completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        progress: 100,
+        progress: 85,
+        processing_stage: "results_saved",
       })
       .eq("id", job.id);
 
     // Update delivery if linked
     if (job.delivery_id) {
+      await updateProgress(88, "updating_delivery");
       await updateDeliveryRecord(job.delivery_id, qcResult, adminClient);
     }
 
-    // Trigger Creative QC (non-blocking)
+    // Stage 5: Creative QC (90-95%) - non-blocking
+    await updateProgress(90, "creative_qc");
     triggerCreativeQC(job.id, job.organisation_id, qcResult, adminClient).catch(() => {});
 
-    // Cleanup temp files
+    // Stage 6: Cleanup (95-100%)
+    await updateProgress(95, "cleanup");
     if (context.cleanup) {
       await context.cleanup();
     }
 
-    console.log(`[QCWorker] Job ${job.id} completed successfully`);
+    // Complete
+    await adminClient!
+      .from("qc_jobs")
+      .update({
+        progress: 100,
+        processing_stage: "complete",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", job.id);
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[QCWorker] Job ${job.id} completed in ${duration}s`);
     return { status: "completed" };
 
   } catch (error: any) {
@@ -500,6 +543,45 @@ async function resolveFileContext(
   } else {
     throw new Error(`Unknown source_type: ${job.source_type}`);
   }
+}
+
+/**
+ * Resolve file context with progress reporting
+ */
+async function resolveFileContextWithProgress(
+  job: QcJobRow,
+  adminClient: ReturnType<typeof getAdminClient>,
+  onProgress?: (percent: number) => Promise<void>
+): Promise<QcJobContext> {
+  if (!job.source_path) {
+    throw new Error("Job missing source_path");
+  }
+
+  if (onProgress) await onProgress(0);
+
+  if (job.source_type === "drive_link") {
+    // Google Drive file - download via API with progress
+    return await resolveDriveFileWithProgress(job.source_path, adminClient!, job, onProgress);
+  } else if (job.source_type === "upload") {
+    // Supabase Storage file - download from bucket with progress
+    return await resolveStorageFileWithProgress(job.source_path, adminClient!, onProgress);
+  } else {
+    throw new Error(`Unknown source_type: ${job.source_type}`);
+  }
+}
+
+/**
+ * Run QC for job with progress reporting
+ */
+async function runQcForJobWithProgress(
+  job: QcJobRow,
+  context: QcJobContext,
+  featuresEnabled: QCFeatures,
+  onProgress?: (percent: number, stage?: string) => Promise<void>
+): Promise<any> {
+  // Import the progress-enabled version from engine
+  const { runQcForJob } = await import("./engine");
+  return runQcForJob(job, context, featuresEnabled, onProgress);
 }
 
 /**
@@ -882,6 +964,102 @@ async function resolveStorageFile(
   const fileName = storagePath.split("/").pop() || "file";
   const tempPath = join(tempDir, `${Date.now()}-${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}`);
   await writeFile(tempPath, buffer);
+
+  return {
+    filePath: tempPath,
+    fileName,
+    cleanup: async () => {
+      try {
+        const { unlink } = await import("fs/promises");
+        await unlink(tempPath);
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+    },
+  };
+}
+
+/**
+ * Resolve file from Google Drive with progress tracking
+ */
+async function resolveDriveFileWithProgress(
+  driveFileId: string,
+  adminClient: ReturnType<typeof getAdminClient>,
+  job?: QcJobRow,
+  onProgress?: (percent: number) => Promise<void>
+): Promise<QcJobContext> {
+  // Use the base implementation but add progress tracking
+  // This is a simplified version - for full progress we'd need to track bytes
+  if (onProgress) await onProgress(10);
+  
+  const context = await resolveDriveFile(driveFileId, adminClient, job);
+  
+  if (onProgress) await onProgress(100);
+  return context;
+}
+
+/**
+ * Resolve file from Supabase Storage with progress tracking
+ */
+async function resolveStorageFileWithProgress(
+  storagePath: string,
+  adminClient: ReturnType<typeof getAdminClient>,
+  onProgress?: (percent: number) => Promise<void>
+): Promise<QcJobContext> {
+  if (onProgress) await onProgress(10);
+  
+  // Download from Supabase Storage
+  const { data, error } = await adminClient!.storage
+    .from("deliveries")
+    .download(storagePath);
+
+  if (error || !data) {
+    throw new Error(`Failed to download from storage: ${error?.message || "Unknown error"}`);
+  }
+
+  if (onProgress) await onProgress(50);
+
+  // Check file size
+  const fileSizeMB = data.size / (1024 * 1024);
+  let maxFileSizeMB = 100;
+  try {
+    const { getProcessingLimits } = await import("@/lib/config/platform");
+    maxFileSizeMB = getProcessingLimits().maxFileSizeMB;
+  } catch (e) {}
+  
+  if (fileSizeMB > maxFileSizeMB) {
+    throw new Error(`File too large (${fileSizeMB.toFixed(1)}MB). Maximum: ${maxFileSizeMB}MB`);
+  }
+
+  if (onProgress) await onProgress(60);
+
+  const arrayBuffer = await data.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  if (onProgress) await onProgress(80);
+
+  // Save to temp location
+  const { writeFile, mkdir } = await import("fs/promises");
+  const { join } = await import("path");
+  const { existsSync } = await import("fs");
+
+  let tempDir = "/tmp/qc-processing";
+  try {
+    const { isCloudEnvironment } = await import("@/lib/config/platform");
+    if (!isCloudEnvironment()) {
+      tempDir = join(process.cwd(), "tmp", "qc-processing");
+    }
+  } catch (e) {}
+  
+  if (!existsSync(tempDir)) {
+    await mkdir(tempDir, { recursive: true });
+  }
+
+  const fileName = storagePath.split("/").pop() || "file";
+  const tempPath = join(tempDir, `${Date.now()}-${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}`);
+  await writeFile(tempPath, buffer);
+
+  if (onProgress) await onProgress(100);
 
   return {
     filePath: tempPath,

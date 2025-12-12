@@ -134,12 +134,51 @@ export default function BulkQCPage() {
     }
   }, []);
 
-  // Initial fetch and polling with faster interval for real-time updates
+  // Fast progress polling for active jobs
+  const fetchProgress = useCallback(async () => {
+    const activeJobs = results.filter(r => 
+      r.status === "processing" || r.status === "uploading"
+    );
+    if (activeJobs.length === 0) return;
+
+    try {
+      const res = await fetch("/api/qc/progress");
+      if (!res.ok) return;
+      const data = await res.json();
+      
+      if (data.progress && data.progress.length > 0) {
+        setResults(prev => prev.map(result => {
+          const update = data.progress.find((p: any) => p.id === result.id);
+          if (update) {
+            return { ...result, progress: update.progress, status: update.status };
+          }
+          return result;
+        }));
+      }
+    } catch (e) {
+      // Ignore progress fetch errors
+    }
+  }, [results]);
+
+  // Initial fetch and polling
   useEffect(() => {
     fetchResults();
-    const interval = setInterval(fetchResults, 3000);
+    // Full refresh every 5 seconds
+    const interval = setInterval(fetchResults, 5000);
     return () => clearInterval(interval);
   }, [fetchResults]);
+
+  // Fast progress polling when jobs are active (every 1 second)
+  useEffect(() => {
+    const hasActiveJobs = results.some(r => 
+      r.status === "processing" || r.status === "uploading"
+    );
+    
+    if (hasActiveJobs) {
+      const progressInterval = setInterval(fetchProgress, 1000);
+      return () => clearInterval(progressInterval);
+    }
+  }, [results, fetchProgress]);
 
   // Fetch subscription/usage info
   useEffect(() => {

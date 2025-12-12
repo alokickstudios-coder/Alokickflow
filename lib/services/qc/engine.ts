@@ -77,22 +77,43 @@ export interface RunQCOptions {
   deliveryId?: string;
 }
 
+// Progress callback type
+export type ProgressCallback = (percent: number, stage?: string) => Promise<void>;
+
 /**
  * Run QC for a job (used by worker)
  */
 export async function runQcForJob(
   job: any,
   context: QcJobContext,
-  featuresEnabled: QCFeatures
+  featuresEnabled: QCFeatures,
+  onProgress?: ProgressCallback
 ): Promise<QCResult> {
   const startTime = Date.now();
   const errors: QCResult['errors'] = [];
 
   console.log(`[QCEngine] Starting QC for job ${job.id}`);
 
+  // Count enabled modules for progress tracking
+  const enabledModules = [
+    true, // basicQC always runs
+    featuresEnabled.lipSyncQC,
+    featuresEnabled.videoGlitchQC,
+    featuresEnabled.bgmQC,
+    featuresEnabled.premiumReport,
+  ].filter(Boolean).length;
+  let completedModules = 0;
+
+  const reportProgress = async (stage: string) => {
+    completedModules++;
+    const percent = Math.floor((completedModules / enabledModules) * 100);
+    if (onProgress) await onProgress(percent, stage);
+  };
+
   // Always run basic QC if enabled
   let basicQC: BasicQCResult;
   try {
+    if (onProgress) await onProgress(5, "basic_qc_start");
     basicQC = await runBasicQC(
       job.episode_id || job.id,
       {
@@ -101,6 +122,7 @@ export async function runQcForJob(
       },
       undefined // subtitles can be added later if needed
     );
+    await reportProgress("basic_qc_complete");
   } catch (error: any) {
     console.error('[QCEngine] Basic QC error:', error.message);
     errors.push({ module: 'basicQC', error: error.message });
@@ -116,6 +138,7 @@ export async function runQcForJob(
   // Lip-sync QC
   if (featuresEnabled.lipSyncQC) {
     try {
+      if (onProgress) await onProgress(Math.floor((completedModules / enabledModules) * 100), "lipsync_start");
       lipSync = await runLipSyncQC(
         job.episode_id || job.id,
         context.filePath
@@ -123,42 +146,50 @@ export async function runQcForJob(
       if (lipSync.skipped) {
         console.log(`[QCEngine] Lip-sync QC skipped: ${lipSync.skipReason}`);
       }
+      await reportProgress("lipsync_complete");
     } catch (error: any) {
       console.error('[QCEngine] Lip-sync QC error:', error.message);
       errors.push({ module: 'lipSyncQC', error: error.message });
-      // Don't fail entire QC if premium module fails
+      completedModules++; // Count as done even if failed
     }
   }
 
   // Video glitch QC
   if (featuresEnabled.videoGlitchQC) {
     try {
+      if (onProgress) await onProgress(Math.floor((completedModules / enabledModules) * 100), "glitch_detection_start");
       videoGlitch = await runVideoGlitchQC(
         job.episode_id || job.id,
         context.filePath
       );
+      await reportProgress("glitch_detection_complete");
     } catch (error: any) {
       console.error('[QCEngine] Video glitch QC error:', error.message);
       errors.push({ module: 'videoGlitchQC', error: error.message });
+      completedModules++;
     }
   }
 
   // BGM QC
   if (featuresEnabled.bgmQC) {
     try {
+      if (onProgress) await onProgress(Math.floor((completedModules / enabledModules) * 100), "bgm_detection_start");
       bgm = await runBGMQC(
         job.episode_id || job.id,
         context.filePath
       );
+      await reportProgress("bgm_detection_complete");
     } catch (error: any) {
       console.error('[QCEngine] BGM QC error:', error.message);
       errors.push({ module: 'bgmQC', error: error.message });
+      completedModules++;
     }
   }
 
   // Premium report (if enabled)
   if (featuresEnabled.premiumReport) {
     try {
+      if (onProgress) await onProgress(Math.floor((completedModules / enabledModules) * 100), "report_generation_start");
       premiumReport = await generatePremiumReport(
         job.episode_id || job.id,
         basicQC,
@@ -171,9 +202,11 @@ export async function runQcForJob(
       if (premiumReport.skipped) {
         console.log(`[QCEngine] Premium report skipped: ${premiumReport.skipReason}`);
       }
+      await reportProgress("report_generation_complete");
     } catch (error: any) {
       console.error('[QCEngine] Premium report error:', error.message);
       errors.push({ module: 'premiumReport', error: error.message });
+      completedModules++;
     }
   }
 
