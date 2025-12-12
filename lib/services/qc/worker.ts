@@ -329,7 +329,28 @@ export async function processBatch(limit: number = 5): Promise<{ processed: numb
 }
 
 /**
- * Process a single QC job directly (called from parallel batch)
+ * Check if job has been cancelled or paused
+ */
+async function isJobCancelled(
+  jobId: string,
+  adminClient: ReturnType<typeof getAdminClient>
+): Promise<boolean> {
+  try {
+    const { data } = await adminClient!
+      .from("qc_jobs")
+      .select("status")
+      .eq("id", jobId)
+      .single();
+    
+    return data?.status === "cancelled" || data?.status === "paused";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Process a single QC job directly (called from batch)
+ * Includes cancellation checks at each step
  */
 async function processQcJobDirect(
   job: QcJobRow,
@@ -338,11 +359,23 @@ async function processQcJobDirect(
   console.log(`[QCWorker] Processing job ${job.id}`);
   
   try {
+    // Check if already cancelled before starting
+    if (await isJobCancelled(job.id, adminClient)) {
+      console.log(`[QCWorker] Job ${job.id} was cancelled before processing`);
+      return { status: "cancelled" };
+    }
+
     // Update progress to 10%
     await updateJobProgress(job.id, 10, adminClient!);
 
     // Get enabled features
     const featuresEnabled = await getEnabledQCFeatures(job.organisation_id);
+
+    // Check cancellation after features load
+    if (await isJobCancelled(job.id, adminClient)) {
+      console.log(`[QCWorker] Job ${job.id} cancelled during feature check`);
+      return { status: "cancelled" };
+    }
 
     // Update progress to 20%
     await updateJobProgress(job.id, 20, adminClient!);
@@ -350,11 +383,26 @@ async function processQcJobDirect(
     // Resolve file
     const context = await resolveFileContext(job, adminClient);
     
+    // Check cancellation after file download (important - saves resources)
+    if (await isJobCancelled(job.id, adminClient)) {
+      console.log(`[QCWorker] Job ${job.id} cancelled after download`);
+      // Clean up downloaded file
+      if (context.cleanup) await context.cleanup();
+      return { status: "cancelled" };
+    }
+
     // Update progress to 40%
     await updateJobProgress(job.id, 40, adminClient!);
 
     // Run QC
     const qcResult = await runQcForJob(job, context, featuresEnabled);
+
+    // Final cancellation check before saving results
+    if (await isJobCancelled(job.id, adminClient)) {
+      console.log(`[QCWorker] Job ${job.id} cancelled after QC processing`);
+      if (context.cleanup) await context.cleanup();
+      return { status: "cancelled" };
+    }
 
     // Update progress to 90%
     await updateJobProgress(job.id, 90, adminClient!);
@@ -389,6 +437,12 @@ async function processQcJobDirect(
 
   } catch (error: any) {
     console.error(`[QCWorker] Job ${job.id} failed:`, error);
+
+    // Check if job was cancelled during processing (don't mark as failed)
+    if (await isJobCancelled(job.id, adminClient)) {
+      console.log(`[QCWorker] Job ${job.id} was cancelled during processing`);
+      return { status: "cancelled" };
+    }
 
     await adminClient!
       .from("qc_jobs")
