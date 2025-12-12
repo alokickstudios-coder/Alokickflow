@@ -254,15 +254,15 @@ async function checkAudioMissing(filePath: string): Promise<BasicQCResult['audio
 
 /**
  * Check loudness compliance (EBU R128 standard)
- * Optimized with timeout and early termination
+ * Full file analysis for accurate results
  */
 async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness']> {
   try {
-    // Use ffmpeg loudnorm filter with timeout (30 seconds max)
-    // Add -t 30 to only analyze first 30 seconds for FAST processing
+    // Use ffmpeg loudnorm filter - analyze full file for accuracy
+    // Timeout: 5 minutes for large files
     const { stdout } = await execAsync(
-      `"${getFFmpeg()}" -t 30 -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`,
-      { timeout: 30000 } // 30 second timeout
+      `"${getFFmpeg()}" -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`,
+      { timeout: 300000 } // 5 minute timeout for full file analysis
     );
 
     // Parse JSON output
@@ -326,15 +326,15 @@ async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness'
 
 /**
  * Detect silence segments
- * Optimized with timeout
+ * Full file analysis for accurate detection
  */
 async function checkSilence(filePath: string): Promise<BasicQCResult['silence']> {
   try {
-    // Use ffmpeg silencedetect filter with timeout (20 seconds max)
-    // Analyze first 60 seconds only for FAST processing
+    // Use ffmpeg silencedetect filter - analyze full file
+    // Timeout: 3 minutes for large files
     const { stderr } = await execAsync(
-      `"${getFFmpeg()}" -t 60 -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`,
-      { timeout: 20000 } // 20 second timeout
+      `"${getFFmpeg()}" -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`,
+      { timeout: 180000 } // 3 minute timeout for full file analysis
     );
 
     const segments: Array<{ start: number; end: number; duration: number }> = [];
@@ -550,10 +550,11 @@ async function checkMissingBGM(
 
   try {
     // Analyze audio spectrum to detect BGM presence
-    // Use ffmpeg to analyze frequency bands (limit to first 20 seconds for FAST processing)
+    // Use ffmpeg to analyze frequency bands - full file for accuracy
+    // Timeout: 2 minutes for large files
     const { stdout } = await execAsync(
-      `"${getFFmpeg()}" -t 20 -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -20`,
-      { timeout: 15000 } // 15 second timeout
+      `"${getFFmpeg()}" -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -50`,
+      { timeout: 120000 } // 2 minute timeout for full file analysis
     );
 
     // Check audio channels (stereo typically has BGM)

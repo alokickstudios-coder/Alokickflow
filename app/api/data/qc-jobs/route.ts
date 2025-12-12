@@ -49,15 +49,12 @@ export async function GET(request: NextRequest) {
       result: job.result_json, // Alias for compatibility
     }));
 
-    // If there are queued jobs, trigger processing (non-blocking)
+    // If there are queued jobs, trigger processing DIRECTLY (no HTTP)
     const queuedCount = enrichedJobs.filter((j: any) => j.status === "queued" || j.status === "pending").length;
     if (queuedCount > 0) {
-      const { getAppBaseUrl } = await import("@/lib/config/platform");
-      const baseUrl = getAppBaseUrl();
-      fetch(`${baseUrl}/api/qc/process-queue`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },
-        body: JSON.stringify({ limit: 3 }),
+      const { processBatch } = await import("@/lib/services/qc/worker");
+      processBatch(3).then(result => {
+        console.log(`[QC-Jobs] Auto-processed ${result.processed} queued job(s)`);
       }).catch(() => {}); // Fire and forget
     }
 

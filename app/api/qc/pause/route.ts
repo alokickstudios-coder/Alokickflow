@@ -110,15 +110,13 @@ export async function POST(request: NextRequest) {
 
       console.log(`[PauseQC] Resumed ${updated?.length || 0} job(s)`);
 
-      // Trigger worker to process resumed jobs
+      // Trigger worker to process resumed jobs DIRECTLY (no HTTP)
       try {
-        const { getAppBaseUrl } = await import("@/lib/config/platform");
-        fetch(`${getAppBaseUrl()}/api/qc/process-queue`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },
-          body: JSON.stringify({ limit: 5 }),
-        }).catch((fetchErr) => {
-          console.warn("[PauseQC] Failed to trigger worker after resume:", fetchErr.message);
+        const { processBatch } = await import("@/lib/services/qc/worker");
+        processBatch(5).then(result => {
+          console.log(`[PauseQC] Worker processed ${result.processed} job(s) after resume`);
+        }).catch((err) => {
+          console.warn("[PauseQC] Worker error after resume:", err.message);
         });
       } catch (triggerError: any) {
         console.warn("[PauseQC] Failed to trigger worker:", triggerError.message);

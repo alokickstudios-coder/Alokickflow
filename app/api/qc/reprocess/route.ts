@@ -107,14 +107,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
 
-    // Trigger queue processing
-    const { getAppBaseUrl } = await import("@/lib/config/platform");
-    const baseUrl = getAppBaseUrl();
-    fetch(`${baseUrl}/api/qc/process-queue`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },
-      body: JSON.stringify({ limit: 5 }),
-    }).catch(() => {});
+    // Trigger queue processing DIRECTLY (no HTTP - avoids port issues)
+    const { processBatch } = await import("@/lib/services/qc/worker");
+    processBatch(5).then(result => {
+      console.log(`[Reprocess] Worker processed ${result.processed} job(s)`);
+    }).catch(err => {
+      console.log("[Reprocess] Worker error:", err.message);
+    });
 
     return NextResponse.json({
       success: true,

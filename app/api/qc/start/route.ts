@@ -510,32 +510,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Trigger worker processing (non-blocking to avoid memory issues)
-    // Jobs will be picked up immediately or by polling
+    // Trigger worker processing DIRECTLY (no HTTP call - avoids port issues)
+    // This is more reliable than HTTP calls which can fail due to port mismatch
     try {
-      const { getAppBaseUrl, getProcessingLimits } = await import("@/lib/config/platform");
-      const baseUrl = getAppBaseUrl();
+      const { processBatch } = await import("@/lib/services/qc/worker");
+      const { getProcessingLimits } = await import("@/lib/config/platform");
       const limits = getProcessingLimits();
       
-      console.log(`[QCStart] Triggering worker at ${baseUrl}/api/qc/process-queue`);
+      console.log(`[QCStart] Triggering worker directly (no HTTP)`);
       
-      // Non-blocking fetch - don't wait for worker to complete
-      // This prevents memory buildup from long-running requests
-      fetch(`${baseUrl}/api/qc/process-queue`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-internal-trigger": "true",
-        },
-        body: JSON.stringify({ limit: limits.maxConcurrentJobs }),
-      }).then(res => {
-        if (res.ok) {
-          console.log(`[QCStart] Worker triggered successfully`);
-        } else {
-          console.warn(`[QCStart] Worker returned ${res.status}`);
-        }
+      // Non-blocking - process in background
+      processBatch(limits.maxConcurrentJobs).then(result => {
+        console.log(`[QCStart] Worker processed ${result.processed} job(s), ${result.errors} error(s)`);
       }).catch(err => {
-        console.log("[QCStart] Worker trigger failed (will retry):", err.message);
+        console.log("[QCStart] Worker error:", err.message);
       });
     } catch (err: any) {
       console.log("[QCStart] Worker trigger error:", err.message);
