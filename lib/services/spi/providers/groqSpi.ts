@@ -1,11 +1,18 @@
 /**
  * Groq SPI (Creative Analysis) Provider
  * 
- * Fallback provider using Groq's LLaMA/Mixtral models for creative analysis.
- * Used when DeepSeek is not configured.
+ * Uses Groq's LLaMA models for creative analysis.
+ * Primary provider when DeepSeek is not configured.
  * 
  * Environment Variables:
  * - GROQ_API_KEY: Your Groq API key (required)
+ * - GROQ_SPI_MODEL: Override model (optional, defaults to llama-3.3-70b-versatile)
+ * 
+ * Available Models (as of Dec 2024):
+ * - llama-3.3-70b-versatile (RECOMMENDED - 128K context, best quality)
+ * - llama-3.1-70b-versatile (deprecated, auto-upgrades to 3.3)
+ * - llama-3.2-90b-vision-preview (for vision tasks)
+ * - mixtral-8x7b-32768 (fast, good for simpler tasks)
  */
 
 import {
@@ -24,8 +31,20 @@ import {
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_BASE = "https://api.groq.com/openai/v1";
-const GROQ_MODEL = "llama-3.3-70b-versatile"; // Most capable model for analysis
-const GROQ_TIMEOUT_MS = 120000;
+const GROQ_TIMEOUT_MS = 180000; // 3 minutes for large analysis
+
+// Model priority list - try in order if one fails
+const GROQ_MODEL_PRIORITY = [
+  process.env.GROQ_SPI_MODEL,           // User override
+  "llama-3.3-70b-versatile",            // Primary - best quality (128K context)
+  "llama-3.1-70b-versatile",            // Fallback (auto-upgrades to 3.3)
+  "llama-3.2-90b-vision-preview",       // Alternative large model
+  "mixtral-8x7b-32768",                 // Fast fallback
+].filter(Boolean) as string[];
+
+function getModel(): string {
+  return GROQ_MODEL_PRIORITY[0] || "llama-3.3-70b-versatile";
+}
 
 /**
  * Build the analysis prompt for Groq
@@ -226,34 +245,19 @@ export class GroqSpiProvider implements SpiProvider {
     return !!GROQ_API_KEY;
   }
 
-  async analyze(
-    context: SpiAnalysisContext,
-    settings?: CreativeQCSettings
-  ): Promise<SpiAnalysisResult> {
-    const startTime = Date.now();
-
-    if (!this.isConfigured()) {
-      throw new Error("Groq is not configured. Please set GROQ_API_KEY.");
+  /**
+   * Make API call with model fallback support
+   */
+  private async callGroqAPI(
+    prompt: string,
+    modelIndex: number = 0
+  ): Promise<{ success: boolean; content?: string; error?: string; model?: string }> {
+    if (modelIndex >= GROQ_MODEL_PRIORITY.length) {
+      return { success: false, error: "All models failed" };
     }
 
-    if (!context.transcript || context.transcript.trim().length < 50) {
-      return {
-        status: "failed",
-        overallCreativeScore: 0,
-        overallRiskScore: 0,
-        overallBrandFitScore: 0,
-        parameters: {},
-        summary: "Insufficient transcript content for analysis.",
-        recommendations: ["Ensure content has speech or subtitles."],
-        error: "Transcript too short",
-        provider: this.name,
-        processingTimeMs: Date.now() - startTime,
-      };
-    }
-
-    console.log(`[GroqSPI] Starting analysis, transcript: ${context.transcript.length} chars`);
-
-    const prompt = buildAnalysisPrompt(context, settings);
+    const model = GROQ_MODEL_PRIORITY[modelIndex];
+    console.log(`[GroqSPI] Trying model: ${model}`);
 
     try {
       const controller = new AbortController();
@@ -266,9 +270,12 @@ export class GroqSpiProvider implements SpiProvider {
           Authorization: `Bearer ${GROQ_API_KEY}`,
         },
         body: JSON.stringify({
-          model: GROQ_MODEL,
+          model,
           messages: [
-            { role: "system", content: "You are a creative media analyst. Respond with ONLY valid JSON." },
+            { 
+              role: "system", 
+              content: "You are an expert creative media quality analyst. You analyze audio/video content transcripts and provide detailed quality assessments. Always respond with ONLY valid JSON - no markdown, no explanations, just the JSON object." 
+            },
             { role: "user", content: prompt }
           ],
           temperature: 0.3,
@@ -281,45 +288,115 @@ export class GroqSpiProvider implements SpiProvider {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Groq API error: ${response.status} - ${errorText}`);
+        console.warn(`[GroqSPI] Model ${model} failed: ${response.status} - ${errorText}`);
+        
+        // Try next model if this one failed (model not found, rate limit, etc.)
+        if (response.status === 404 || response.status === 429 || response.status === 503) {
+          return this.callGroqAPI(prompt, modelIndex + 1);
+        }
+        
+        return { success: false, error: `API error: ${response.status} - ${errorText}` };
       }
 
       const data = await response.json();
-      const assistantMessage = data.choices?.[0]?.message?.content;
+      const content = data.choices?.[0]?.message?.content;
 
-      if (!assistantMessage) {
-        throw new Error("No response from Groq");
+      if (!content) {
+        return { success: false, error: "Empty response from API" };
       }
 
-      console.log(`[GroqSPI] Received response, parsing...`);
-      return parseGroqResponse(assistantMessage, startTime);
+      return { success: true, content, model };
 
     } catch (error: any) {
       if (error.name === "AbortError") {
-        return {
-          status: "failed",
-          overallCreativeScore: 0,
-          overallRiskScore: 0,
-          overallBrandFitScore: 0,
-          parameters: {},
-          summary: "Analysis timed out.",
-          recommendations: ["Try with shorter content."],
-          error: "Timeout",
-          provider: this.name,
-          processingTimeMs: Date.now() - startTime,
-        };
+        console.warn(`[GroqSPI] Model ${model} timed out, trying next...`);
+        return this.callGroqAPI(prompt, modelIndex + 1);
       }
+      
+      console.error(`[GroqSPI] Error with model ${model}:`, error.message);
+      return this.callGroqAPI(prompt, modelIndex + 1);
+    }
+  }
 
-      console.error(`[GroqSPI] Analysis failed:`, error);
+  async analyze(
+    context: SpiAnalysisContext,
+    settings?: CreativeQCSettings
+  ): Promise<SpiAnalysisResult> {
+    const startTime = Date.now();
+
+    if (!this.isConfigured()) {
+      throw new Error("Groq is not configured. Please set GROQ_API_KEY environment variable.");
+    }
+
+    if (!context.transcript || context.transcript.trim().length < 50) {
       return {
         status: "failed",
         overallCreativeScore: 0,
         overallRiskScore: 0,
         overallBrandFitScore: 0,
         parameters: {},
-        summary: "Creative QC analysis failed.",
-        recommendations: ["Check API configuration."],
-        error: error.message,
+        summary: "Insufficient transcript content for Creative QC analysis.",
+        recommendations: [
+          "Ensure the media has spoken dialogue or narration.",
+          "Upload subtitles/captions for the content.",
+          "Try a longer video with more speech content."
+        ],
+        error: "Transcript too short (minimum 50 characters required)",
+        provider: this.name,
+        processingTimeMs: Date.now() - startTime,
+      };
+    }
+
+    console.log(`[GroqSPI] Starting Creative QC analysis`);
+    console.log(`[GroqSPI] Transcript length: ${context.transcript.length} chars`);
+    console.log(`[GroqSPI] Available models: ${GROQ_MODEL_PRIORITY.join(", ")}`);
+
+    const prompt = buildAnalysisPrompt(context, settings);
+
+    // Call API with automatic model fallback
+    const apiResult = await this.callGroqAPI(prompt);
+
+    if (!apiResult.success) {
+      console.error(`[GroqSPI] All models failed:`, apiResult.error);
+      return {
+        status: "failed",
+        overallCreativeScore: 0,
+        overallRiskScore: 0,
+        overallBrandFitScore: 0,
+        parameters: {},
+        summary: "Creative QC analysis failed - API error.",
+        recommendations: [
+          "Check your GROQ_API_KEY is valid",
+          "Verify your Groq account has API access",
+          "Try again in a few minutes"
+        ],
+        error: apiResult.error || "API call failed",
+        provider: this.name,
+        processingTimeMs: Date.now() - startTime,
+      };
+    }
+
+    console.log(`[GroqSPI] Success with model: ${apiResult.model}`);
+    console.log(`[GroqSPI] Response length: ${apiResult.content?.length} chars`);
+
+    try {
+      const result = parseGroqResponse(apiResult.content!, startTime);
+      result.rawResponse = {
+        ...result.rawResponse,
+        _groq_model: apiResult.model,
+      };
+      return result;
+    } catch (parseError: any) {
+      console.error(`[GroqSPI] Parse error:`, parseError);
+      return {
+        status: "failed",
+        overallCreativeScore: 0,
+        overallRiskScore: 0,
+        overallBrandFitScore: 0,
+        parameters: {},
+        summary: "Failed to parse Creative QC results.",
+        recommendations: ["Try running the analysis again."],
+        error: `Parse error: ${parseError.message}`,
         provider: this.name,
         processingTimeMs: Date.now() - startTime,
       };

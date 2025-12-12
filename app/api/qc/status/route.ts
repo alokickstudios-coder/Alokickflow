@@ -2,7 +2,7 @@
  * GET /api/qc/status
  * 
  * Diagnostic endpoint to check QC system status
- * Helps debug FFmpeg availability, worker configuration, etc.
+ * Helps debug FFmpeg availability, worker configuration, Creative QC providers, etc.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -40,14 +40,29 @@ export async function GET(request: NextRequest) {
       reachable: false,
       error: null,
     },
-    groqApi: {
-      configured: !!process.env.GROQ_API_KEY,
+    creativeQC: {
+      groqConfigured: !!process.env.GROQ_API_KEY,
+      deepseekConfigured: !!process.env.DEEPSEEK_API_KEY,
+      primaryProvider: null as string | null,
+      transcriptionProvider: "groq-whisper",
+      spiProvider: null as string | null,
+      ready: false,
     },
     supabase: {
       urlConfigured: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
       serviceKeyConfigured: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
     },
   };
+
+  // Determine Creative QC providers
+  if (process.env.DEEPSEEK_API_KEY) {
+    diagnostics.creativeQC.spiProvider = "deepseek";
+    diagnostics.creativeQC.primaryProvider = "DeepSeek (best quality)";
+  } else if (process.env.GROQ_API_KEY) {
+    diagnostics.creativeQC.spiProvider = "groq-llama-3.3-70b";
+    diagnostics.creativeQC.primaryProvider = "Groq LLaMA 3.3 70B";
+  }
+  diagnostics.creativeQC.ready = !!(process.env.GROQ_API_KEY || process.env.DEEPSEEK_API_KEY);
 
   // Check FFmpeg
   try {
@@ -99,19 +114,69 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // Test Groq API connectivity if configured
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const groqResponse = await fetch("https://api.groq.com/openai/v1/models", {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (groqResponse.ok) {
+        const modelsData = await groqResponse.json();
+        const modelIds = modelsData.data?.map((m: any) => m.id) || [];
+        diagnostics.creativeQC.groqConnected = true;
+        diagnostics.creativeQC.availableModels = modelIds.filter((id: string) => 
+          id.includes("llama") || id.includes("mixtral")
+        ).slice(0, 10);
+        diagnostics.creativeQC.hasLlama33 = modelIds.includes("llama-3.3-70b-versatile");
+      } else {
+        diagnostics.creativeQC.groqConnected = false;
+        diagnostics.creativeQC.groqError = `HTTP ${groqResponse.status}`;
+      }
+    } catch (error: any) {
+      diagnostics.creativeQC.groqConnected = false;
+      diagnostics.creativeQC.groqError = error.message;
+    }
+  }
+
   // Overall status
   const canProcessQC = diagnostics.ffmpeg.available || diagnostics.qcWorker.reachable;
+  const canProcessCreativeQC = diagnostics.creativeQC.ready;
+  
+  const recommendations: string[] = [];
+  if (!canProcessQC) {
+    if (!diagnostics.ffmpeg.available) {
+      recommendations.push("Install FFmpeg in the Docker container");
+    }
+    if (!diagnostics.qcWorker.configured) {
+      recommendations.push("Configure QC_WORKER_URL and QC_WORKER_SECRET");
+    }
+    if (diagnostics.qcWorker.configured && !diagnostics.qcWorker.reachable) {
+      recommendations.push("Verify QC Worker service is accessible");
+    }
+  }
+  if (!canProcessCreativeQC) {
+    recommendations.push("Add GROQ_API_KEY for Creative QC (SPI) analysis");
+  }
   
   return NextResponse.json({
     success: canProcessQC,
     message: canProcessQC 
-      ? "QC system is operational" 
-      : "QC system cannot process videos - FFmpeg not available and QC Worker not reachable",
+      ? canProcessCreativeQC
+        ? "QC system fully operational (Basic QC + Creative QC)"
+        : "Basic QC operational, Creative QC requires GROQ_API_KEY"
+      : "QC system cannot process videos - FFmpeg not available",
     diagnostics,
-    recommendations: !canProcessQC ? [
-      !diagnostics.ffmpeg.available && "Install FFmpeg in the Docker container or use a runtime that includes FFmpeg",
-      !diagnostics.qcWorker.configured && "Configure QC_WORKER_URL and QC_WORKER_SECRET environment variables",
-      diagnostics.qcWorker.configured && !diagnostics.qcWorker.reachable && "Verify QC Worker service is running and accessible",
-    ].filter(Boolean) : [],
+    capabilities: {
+      basicQC: canProcessQC,
+      creativeQC: canProcessCreativeQC,
+      transcription: !!process.env.GROQ_API_KEY,
+      aiAnalysis: canProcessCreativeQC,
+    },
+    recommendations: recommendations.length > 0 ? recommendations : undefined,
   });
 }
