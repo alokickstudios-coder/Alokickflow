@@ -115,6 +115,7 @@ export interface BasicQCResult {
     audioCodec?: string;
     audioChannels?: number;
     sampleRate?: number;
+    size?: number; // File size in bytes (for memory optimization)
   };
   transcript?: TranscriptResult; // If transcription is available
 }
@@ -159,23 +160,41 @@ export async function runBasicQC(
     return createMinimalQCResult();
   }
 
-  // Run all checks in parallel where possible
-  const [
-    audioMissing,
-    loudness,
-    silence,
-    metadata,
-    visualQuality,
-    transcript,
-  ] = await Promise.all([
-    checkAudioMissing(filePath),
-    checkLoudness(filePath),
-    checkSilence(filePath),
-    getMetadata(filePath),
-    checkVisualQuality(filePath),
-    // Try to get transcript if configured (non-blocking)
-    getTranscript(filePath, 'en').catch(() => null),
-  ]);
+  // MEMORY OPTIMIZATION: Run checks SEQUENTIALLY to prevent OOM on 512MB instances
+  // Parallel execution was causing memory spikes with multiple FFmpeg processes
+  console.log(`[BasicQC] Starting sequential analysis (memory-optimized mode)`);
+  
+  // 1. Get metadata first (fast, low memory)
+  const metadata = await getMetadata(filePath);
+  console.log(`[BasicQC] Metadata: ${metadata.duration?.toFixed(1)}s, ${metadata.width}x${metadata.height}`);
+  
+  // 2. Check audio (quick FFprobe call)
+  const audioMissing = await checkAudioMissing(filePath);
+  
+  // 3. Check loudness (FFmpeg loudnorm - can be memory intensive)
+  const loudness = await checkLoudness(filePath);
+  
+  // 4. Check silence (FFmpeg silencedetect)
+  const silence = await checkSilence(filePath);
+  
+  // 5. Check visual quality
+  const visualQuality = await checkVisualQuality(filePath);
+  
+  // 6. Transcription - SKIP for large files (>50MB) to save memory
+  // Transcription loads entire file into memory which can cause OOM
+  let transcript: TranscriptResult | null = null;
+  const fileSizeMB = metadata.size ? metadata.size / (1024 * 1024) : 100;
+  if (fileSizeMB < 50) {
+    console.log(`[BasicQC] Running transcription (file size: ${fileSizeMB.toFixed(1)}MB)`);
+    transcript = await getTranscript(filePath, 'en').catch((e) => {
+      console.warn(`[BasicQC] Transcription skipped: ${e.message}`);
+      return null;
+    });
+  } else {
+    console.log(`[BasicQC] Skipping transcription for large file (${fileSizeMB.toFixed(1)}MB > 50MB limit)`);
+  }
+  
+  console.log(`[BasicQC] All checks complete`);
 
   // Missing dialogue detection (uses silence + transcript if available)
   const missingDialogue = await checkMissingDialogue(
@@ -662,6 +681,15 @@ async function checkVisualQuality(filePath: string): Promise<BasicQCResult['visu
  */
 async function getMetadata(filePath: string): Promise<BasicQCResult['metadata']> {
   try {
+    // Get file size first (for memory optimization decisions)
+    let fileSize = 0;
+    try {
+      const stats = statSync(filePath);
+      fileSize = stats.size;
+    } catch {
+      // Ignore stat errors
+    }
+    
     const { stdout } = await execAsync(
       `"${getFFprobe()}" -v error -show_entries format=duration -show_entries stream=codec_name,channels,sample_rate -of json "${filePath}"`,
       { timeout: 15000 } // 15 second timeout
@@ -679,6 +707,7 @@ async function getMetadata(filePath: string): Promise<BasicQCResult['metadata']>
       audioCodec: audioStream?.codec_name,
       audioChannels: audioStream?.channels,
       sampleRate: audioStream?.sample_rate ? parseInt(audioStream.sample_rate) : undefined,
+      size: fileSize, // Add file size for memory optimization
     };
   } catch (error: any) {
     console.warn('[BasicQC] Metadata extraction error:', error.message);
