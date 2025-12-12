@@ -1283,6 +1283,16 @@ async function triggerCreativeQC(
 
     await adminClient!.from("qc_jobs").update(updateData).eq("id", jobId);
 
+    // Generate SPI Fingerprint after Creative QC completes
+    if (creativeResult.status === "completed") {
+      try {
+        console.log(`[QCWorker] Generating SPI Fingerprint for job ${jobId}`);
+        await generateAndSaveSPIFingerprint(jobId, organizationId, qcResult, creativeResult, adminClient);
+      } catch (fpError: any) {
+        console.warn(`[QCWorker] Fingerprint generation failed (non-fatal):`, fpError.message);
+      }
+    }
+
   } catch (error: any) {
     console.error(`[QCWorker] Creative QC error for job ${jobId}:`, error);
     
@@ -1296,5 +1306,89 @@ async function triggerCreativeQC(
       })
       .eq("id", jobId);
   }
+}
+
+/**
+ * Generate and save SPI Fingerprint
+ */
+async function generateAndSaveSPIFingerprint(
+  jobId: string,
+  organizationId: string,
+  qcResult: any,
+  creativeResult: any,
+  adminClient: ReturnType<typeof getAdminClient>
+) {
+  const { generateSPIFingerprint } = await import("@/lib/services/spi/fingerprint");
+
+  // Get job details
+  const { data: job } = await adminClient!
+    .from("qc_jobs")
+    .select(`
+      *,
+      delivery:deliveries(file_name, original_file_name, file_size, mime_type)
+    `)
+    .eq("id", jobId)
+    .single();
+
+  if (!job) {
+    console.warn(`[QCWorker] Could not find job ${jobId} for fingerprint`);
+    return;
+  }
+
+  const delivery = Array.isArray(job.delivery) ? job.delivery[0] : job.delivery;
+
+  const input = {
+    jobId,
+    organizationId,
+    fileName: job.file_name || delivery?.original_file_name || "unknown",
+    fileSize: delivery?.file_size || 0,
+    mimeType: delivery?.mime_type || "video/mp4",
+    sourceType: job.source_type || "upload",
+    sourcePath: job.source_path,
+    
+    mediaMetadata: {
+      duration: qcResult.basicQC?.metadata?.duration,
+      width: qcResult.basicQC?.metadata?.width,
+      height: qcResult.basicQC?.metadata?.height,
+      frameRate: qcResult.basicQC?.metadata?.frameRate,
+      videoCodec: qcResult.basicQC?.metadata?.videoCodec,
+      audioBitrate: qcResult.basicQC?.metadata?.audioBitrate,
+      audioChannels: qcResult.basicQC?.metadata?.audioChannels,
+    },
+    
+    audioAnalysis: {
+      loudnessLUFS: qcResult.basicQC?.loudness?.lufs,
+      silencePercentage: qcResult.basicQC?.silence?.percentage,
+      hasBGM: qcResult.bgm?.bgmDetected,
+      hasDialogue: !qcResult.basicQC?.audioMissing?.detected,
+    },
+    
+    transcript: qcResult.transcript || creativeResult.raw_response?.transcript,
+    
+    spiResult: {
+      overallCreativeScore: creativeResult.overall_creative_score,
+      overallRiskScore: creativeResult.overall_risk_score,
+      overallBrandFitScore: creativeResult.overall_brand_fit_score,
+      parameters: creativeResult.parameters || {},
+      summary: creativeResult.summary || "",
+      recommendations: creativeResult.recommendations || [],
+      detectedEmotions: creativeResult.detected_emotions || [],
+      detectedThemes: creativeResult.detected_themes || [],
+    },
+  };
+
+  const fingerprint = await generateSPIFingerprint(input);
+
+  // Save fingerprint reference to database
+  await adminClient!
+    .from("qc_jobs")
+    .update({
+      spi_fingerprint_id: fingerprint._spi.fingerprint_id,
+      spi_fingerprint_hash: fingerprint._spi.fingerprint_hash,
+      spi_fingerprint_generated_at: fingerprint._spi.generated_at,
+    })
+    .eq("id", jobId);
+
+  console.log(`[QCWorker] SPI Fingerprint generated: ${fingerprint._spi.fingerprint_id}`);
 }
 
