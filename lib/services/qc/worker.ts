@@ -486,13 +486,23 @@ async function processQcJobDirect(
     await updateJobProgress(jobId, 45, adminClient, "analyzing");
     console.log(`[QCWorker] Running QC analysis on ${context.filePath}`);
     
+    const QC_ANALYSIS_TIMEOUT_MS = 180000; // 3 minutes max for QC analysis
+    
     let qcResult: any;
     try {
-      // Run QC with progress updates
-      qcResult = await runQcForJob(job, context, featuresEnabled, async (percent, stage) => {
+      // Run QC with progress updates AND timeout
+      const qcPromise = runQcForJob(job, context, featuresEnabled, async (percent, stage) => {
         const mappedProgress = 45 + Math.floor(percent * 0.30);
         await updateJobProgress(jobId, mappedProgress, adminClient, stage);
       });
+      
+      // Wrap with timeout to prevent indefinite hangs
+      qcResult = await withTimeout(
+        qcPromise,
+        QC_ANALYSIS_TIMEOUT_MS,
+        `QC analysis timed out after ${QC_ANALYSIS_TIMEOUT_MS / 1000} seconds`
+      );
+      
       console.log(`[QCWorker] QC completed: status=${qcResult.status}, score=${qcResult.score}`);
     } catch (qcError: any) {
       console.error(`[QCWorker] QC analysis failed for ${jobId}:`, qcError.message);
