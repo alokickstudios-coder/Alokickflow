@@ -16,7 +16,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { readFile } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { getTranscript, TranscriptResult } from './transcription';
 import { getFFmpegPath, getFFprobePath } from './ffmpegPaths';
 
@@ -111,6 +111,8 @@ export interface BasicQCResult {
   };
   metadata: {
     duration: number;
+    width?: number;
+    height?: number;
     videoCodec?: string;
     audioCodec?: string;
     audioChannels?: number;
@@ -691,18 +693,20 @@ async function getMetadata(filePath: string): Promise<BasicQCResult['metadata']>
     }
     
     const { stdout } = await execAsync(
-      `"${getFFprobe()}" -v error -show_entries format=duration -show_entries stream=codec_name,channels,sample_rate -of json "${filePath}"`,
+      `"${getFFprobe()}" -v error -show_entries format=duration -show_entries stream=codec_name,width,height,channels,sample_rate -of json "${filePath}"`,
       { timeout: 15000 } // 15 second timeout
     );
 
     const data = JSON.parse(stdout);
     const duration = parseFloat(data.format?.duration || '0');
     
-    const videoStream = data.streams?.find((s: any) => s.codec_type === 'video' || (s.codec_name && !s.channels));
+    const videoStream = data.streams?.find((s: any) => s.codec_type === 'video' || (s.codec_name && !s.channels && s.width));
     const audioStream = data.streams?.find((s: any) => s.codec_type === 'audio' || s.channels);
 
     return {
       duration,
+      width: videoStream?.width,
+      height: videoStream?.height,
       videoCodec: videoStream?.codec_name,
       audioCodec: audioStream?.codec_name,
       audioChannels: audioStream?.channels,
