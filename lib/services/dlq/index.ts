@@ -294,8 +294,12 @@ export async function retryDLQEntry(
           method: "POST",
           headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },
           body: JSON.stringify({ limit: 5 }),
-        }).catch(() => {});
-      } catch {}
+        }).catch((fetchErr) => {
+          console.warn('[DLQ] Failed to trigger worker after retry:', fetchErr.message);
+        });
+      } catch (triggerError: any) {
+        console.warn('[DLQ] Failed to trigger worker:', triggerError.message);
+      }
 
       console.log(`[DLQ] Retried job ${entry.job_id} (attempt ${entry.attempt_count + 1})`);
       return {

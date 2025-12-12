@@ -8,7 +8,7 @@
 
 ## Summary
 
-All 34 remaining empty catch blocks have been replaced with proper error logging.
+All **35** empty catch blocks have been replaced with proper error logging (34 original + 1 discovered in DLQ service).
 
 ### Files Modified
 
@@ -23,6 +23,7 @@ All 34 remaining empty catch blocks have been replaced with proper error logging
 | `lib/services/qcSheetService.ts` | 1 | Medium |
 | `lib/supabase/server.ts` | 2 | Low |
 | `lib/google-drive/index.ts` | 1 | Medium |
+| `lib/services/dlq/index.ts` | 1 | Medium |
 | `app/api/qc/debug/route.ts` | 2 | High |
 | `app/api/qc/pause/route.ts` | 1 | Medium |
 | `app/api/qc/status/route.ts` | 2 | Medium |
@@ -34,7 +35,7 @@ All 34 remaining empty catch blocks have been replaced with proper error logging
 | `app/api/data/qc-jobs/route.ts` | 1 | Medium |
 | `app/api/auth/register/route.ts` | 2 | Medium |
 
-**Total:** 34 empty catches → 0 (excluding intentional test code)
+**Total:** 35 empty catches → 0 (excluding intentional test code)
 
 ---
 

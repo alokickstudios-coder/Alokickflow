@@ -1,24 +1,33 @@
 # PR: Production Hardening Phase 2 - Final Verification
 
+---
+
+## ⚠️ **ACTION REQUIRED: Operator must run staging migrations and sign off. Do NOT run prod migrations or enable production feature flags without 3 approvals.**
+
+---
+
 ## Summary
 
 This PR completes the production hardening initiative with:
-- ✅ All 34 empty catch blocks fixed
+- ✅ All **35** empty catch blocks fixed (34 original + 1 in DLQ service)
 - ✅ DLQ (Dead Letter Queue) system implemented
 - ✅ Heartbeat/Watchdog system implemented
 - ✅ API Contract tests added
 - ✅ Monitoring alerts configured
-- ✅ Runbooks created
+- ✅ Runbooks created (4 total including first_24h_watchlist)
 - ✅ Migration scripts with dry-run validation
 - ✅ Canary rollout scripts
+- ✅ Load test script (k6)
 
 ## Changes
 
 ### Code Changes (Non-Destructive)
-- **34 empty catch blocks** replaced with structured logging
+- **35 empty catch blocks** replaced with structured logging (34 original + 1 in DLQ)
 - New services: `lib/services/dlq/`, `lib/services/heartbeat/`
 - New API: `/api/admin/dlq` (feature-flagged)
 - New tests: `tests/contracts/api-contracts.test.ts`
+- New load test: `tools/load/k6-qc-load-test.js`
+- New runbook: `runbooks/first_24h_watchlist.md`
 
 ### Feature Flags (All Default OFF)
 | Flag | Default | Purpose |

@@ -1,5 +1,11 @@
 # Final Verification Report
 
+---
+
+## ⚠️ **ACTION REQUIRED: Operator must run staging migrations and sign off. Do NOT run prod migrations or enable production feature flags without 3 approvals.**
+
+---
+
 **Service:** AlokickFlow  
 **Phase:** Production Hardening Phase 2  
 **Date:** 2024-12-12  
@@ -9,11 +15,11 @@
 
 # 🟢 GO/NO-GO RECOMMENDATION: **CONDITIONAL GO**
 
-**Condition:** Requires operator to complete migration dry-run on staging database and all three approvers to sign off.
+**CONDITIONAL GO — operator must run migrations on staging and confirm tests, then follow canary rollout plan.**
 
 | Category | Status | Notes |
 |----------|--------|-------|
-| Code Changes | ✅ Complete | All 34 empty catches fixed |
+| Code Changes | ✅ Complete | All 35 empty catches fixed (34 original + 1 in DLQ) |
 | TypeScript | ✅ Pass | No compilation errors |
 | Build | ✅ Pass | Production build successful |
 | Feature Flags | ✅ Ready | Default OFF in production |
@@ -21,7 +27,8 @@
 | Tests | ⚠️ Partial | Jest setup requires operator action |
 | DLQ System | ✅ Ready | Feature-flagged, migration ready |
 | Heartbeat | ✅ Ready | Feature-flagged, migration ready |
-| Runbooks | ✅ Complete | 3 runbooks created |
+| Runbooks | ✅ Complete | 4 runbooks (including first_24h_watchlist) |
+| Load Test | ✅ Ready | k6 script at tools/load/k6-qc-load-test.js |
 
 ---
 
@@ -44,7 +51,7 @@ No type errors
 ### 1.3 Empty Catch Block Count
 ```
 $ grep -r "} catch {}" lib/ app/ | wc -l
-0 ✅ (was 34)
+0 ✅ (was 35 - 34 original + 1 found in DLQ service)
 ```
 
 ### 1.4 Test Setup Required

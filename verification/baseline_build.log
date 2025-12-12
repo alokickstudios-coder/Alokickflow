@@ -1,0 +1,155 @@
+
+> alokickflow@1.0.0 build
+> next build
+
+   ▲ Next.js 14.1.0
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/63) ...
+   Generating static pages (15/63) 
+[Creative QC Status API] Error: n [Error]: Dynamic server usage: Page couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at u (/Users/alokrichhariya/alokickflow/.next/server/app/_not-found.js:1:3448)
+    at c (/Users/alokrichhariya/alokickflow/.next/server/chunks/7439.js:1:1556)
+    at a (/Users/alokrichhariya/alokickflow/.next/server/app/api/billing/subscription/route.js:1:11280)
+    at l (/Users/alokrichhariya/alokickflow/.next/server/app/api/qc/creative/status/route.js:1:900)
+    at /Users/alokrichhariya/alokickflow/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:42490
+    at /Users/alokrichhariya/alokickflow/node_modules/next/dist/server/lib/trace/tracer.js:133:36
+    at NoopContextManager.with (/Users/alokrichhariya/alokickflow/node_modules/next/dist/compiled/@opentelemetry/api/index.js:1:7062)
+    at ContextAPI.with (/Users/alokrichhariya/alokickflow/node_modules/next/dist/compiled/@opentelemetry/api/index.js:1:518)
+    at NoopTracer.startActiveSpan (/Users/alokrichhariya/alokickflow/node_modules/next/dist/compiled/@opentelemetry/api/index.js:1:18093)
+    at ProxyTracer.startActiveSpan (/Users/alokrichhariya/alokickflow/node_modules/next/dist/compiled/@opentelemetry/api/index.js:1:18854) {
+  description: "Page couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+   Generating static pages (31/63) 
+   Generating static pages (47/63) 
+ ✓ Generating static pages (63/63) 
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                                 Size     First Load JS
+┌ λ /                                                       181 B          91.2 kB
+├ ○ /_not-found                                             0 B                0 B
+├ λ /api/admin/dlq                                          0 B                0 B
+├ λ /api/admin/setup-enterprise                             0 B                0 B
+├ λ /api/ai/command                                         0 B                0 B
+├ λ /api/assignments                                        0 B                0 B
+├ λ /api/auth/register                                      0 B                0 B
+├ λ /api/auth/session                                       0 B                0 B
+├ λ /api/billing/addons                                     0 B                0 B
+├ λ /api/billing/createPortalSession                        0 B                0 B
+├ λ /api/billing/plan                                       0 B                0 B
+├ λ /api/billing/subscription                               0 B                0 B
+├ λ /api/billing/usage                                      0 B                0 B
+├ λ /api/config                                             0 B                0 B
+├ λ /api/cron/cleanup                                       0 B                0 B
+├ λ /api/data/analytics                                     0 B                0 B
+├ λ /api/data/deliveries                                    0 B                0 B
+├ λ /api/data/projects                                      0 B                0 B
+├ λ /api/data/qc-jobs                                       0 B                0 B
+├ λ /api/data/session                                       0 B                0 B
+├ λ /api/data/upload                                        0 B                0 B
+├ ○ /api/debug/auth-test                                    0 B                0 B
+├ ○ /api/debug/google                                       0 B                0 B
+├ ○ /api/debug/schema                                       0 B                0 B
+├ ○ /api/debug/supabase                                     0 B                0 B
+├ ○ /api/debug/users                                        0 B                0 B
+├ λ /api/deliveries                                         0 B                0 B
+├ λ /api/dev/runQcSample                                    0 B                0 B
+├ λ /api/google/auth                                        0 B                0 B
+├ λ /api/google/auth/disconnect                             0 B                0 B
+├ λ /api/google/callback                                    0 B                0 B
+├ λ /api/google/drive/create-folder                         0 B                0 B
+├ λ /api/google/drive/download                              0 B                0 B
+├ λ /api/google/drive/list                                  0 B                0 B
+├ λ /api/google/drive/upload/finish                         0 B                0 B
+├ λ /api/google/drive/upload/init                           0 B                0 B
+├ λ /api/google/test                                        0 B                0 B
+├ λ /api/health                                             0 B                0 B
+├ λ /api/health/auth                                        0 B                0 B
+├ λ /api/health/full                                        0 B                0 B
+├ λ /api/my-work                                            0 B                0 B
+├ λ /api/project-stages                                     0 B                0 B
+├ λ /api/projects                                           0 B                0 B
+├ λ /api/projects/[projectId]/stages                        0 B                0 B
+├ λ /api/projects/[projectId]/stages/[stageId]              0 B                0 B
+├ λ /api/projects/[projectId]/stages/[stageId]/assignments  0 B                0 B
+├ λ /api/projects/assign-vendor                             0 B                0 B
+├ λ /api/qc/ai-analyze                                      0 B                0 B
+├ λ /api/qc/bulk-process                                    0 B                0 B
+├ λ /api/qc/cancel                                          0 B                0 B
+├ λ /api/qc/creative/analyze                                0 B                0 B
+├ λ /api/qc/creative/settings                               0 B                0 B
+├ λ /api/qc/creative/status                                 0 B                0 B
+├ λ /api/qc/debug                                           0 B                0 B
+├ λ /api/qc/diagnostic                                      0 B                0 B
+├ λ /api/qc/export-to-sheets                                0 B                0 B
+├ λ /api/qc/job-status                                      0 B                0 B
+├ λ /api/qc/jobs                                            0 B                0 B
+├ λ /api/qc/pause                                           0 B                0 B
+├ λ /api/qc/process-queue                                   0 B                0 B
+├ λ /api/qc/progress                                        0 B                0 B
+├ λ /api/qc/reprocess                                       0 B                0 B
+├ λ /api/qc/start                                           0 B                0 B
+├ λ /api/qc/status                                          0 B                0 B
+├ λ /api/qc/verify-results                                  0 B                0 B
+├ λ /api/settings/google                                    0 B                0 B
+├ λ /api/settings/organization                              0 B                0 B
+├ λ /api/settings/profile                                   0 B                0 B
+├ λ /api/setup/create-bucket                                0 B                0 B
+├ λ /api/setup/create-google-tokens-table                   0 B                0 B
+├ λ /api/setup/migrate                                      0 B                0 B
+├ λ /api/setup/migrate-stages                               0 B                0 B
+├ λ /api/setup/upgrade                                      0 B                0 B
+├ λ /api/spi/fingerprint                                    0 B                0 B
+├ λ /api/spi/fingerprint/download                           0 B                0 B
+├ λ /api/spi/verify                                         0 B                0 B
+├ λ /api/stripe/create-checkout                             0 B                0 B
+├ λ /api/stripe/customer-portal                             0 B                0 B
+├ λ /api/stripe/webhook                                     0 B                0 B
+├ λ /api/team                                               0 B                0 B
+├ λ /api/team/invite                                        0 B                0 B
+├ λ /api/user/organization                                  0 B                0 B
+├ λ /api/user/profile                                       0 B                0 B
+├ λ /api/vendors/create                                     0 B                0 B
+├ λ /api/vendors/team                                       0 B                0 B
+├ λ /api/webhooks/stripe                                    0 B                0 B
+├ ○ /contact                                                1.46 kB        92.5 kB
+├ ○ /dashboard                                              16.4 kB         237 kB
+├ ○ /dashboard/ai                                           10.4 kB         145 kB
+├ ○ /dashboard/ai/compliance                                6.56 kB         135 kB
+├ ○ /dashboard/ai/diff                                      7.15 kB         132 kB
+├ ○ /dashboard/analytics                                    3.14 kB         128 kB
+├ ○ /dashboard/assignments                                  6.21 kB         231 kB
+├ ○ /dashboard/billing                                      7.81 kB         132 kB
+├ ○ /dashboard/deliveries                                   7.38 kB         233 kB
+├ ○ /dashboard/my-work                                      7.77 kB         229 kB
+├ ○ /dashboard/pricing                                      5.3 kB          130 kB
+├ ○ /dashboard/projects                                     7.35 kB         186 kB
+├ ○ /dashboard/qc                                           12.8 kB         187 kB
+├ ○ /dashboard/qc/bulk                                      14.7 kB         239 kB
+├ ○ /dashboard/settings                                     10.3 kB         140 kB
+├ ○ /dashboard/team                                         6.2 kB          176 kB
+├ ○ /dashboard/vendors                                      8.45 kB         169 kB
+├ ○ /forgot-password                                        4.17 kB         194 kB
+├ ○ /login                                                  4.9 kB          195 kB
+├ ○ /onboarding                                             4.74 kB         188 kB
+├ ○ /privacy                                                151 B          84.4 kB
+├ ○ /register                                               4.97 kB         195 kB
+├ ○ /reset-password                                         4.02 kB         187 kB
+└ ○ /terms                                                  151 B          84.4 kB
++ First Load JS shared by all                               84.2 kB
+  ├ chunks/8069-1a8ef5fc55802df4.js                         28.9 kB
+  ├ chunks/fd9d1056-b66b28c8f8addbd2.js                     53.4 kB
+  └ other shared chunks (total)                             1.97 kB
+
+
+ƒ Middleware                                                159 kB
+
+○  (Static)   prerendered as static content
+λ  (Dynamic)  server-rendered on demand using Node.js
+

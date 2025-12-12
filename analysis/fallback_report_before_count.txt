@@ -1,0 +1,2 @@
+Empty catch block count (production code): 1
+Empty catch block count after fix: 0

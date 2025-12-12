@@ -5,10 +5,10 @@
   "base_branch": "main",
   "status": "CONDITIONAL_PASS",
   "summary": {
-    "recommendation": "GO with operator actions",
+    "recommendation": "CONDITIONAL GO — operator must run migrations on staging and confirm tests, then follow canary rollout plan",
     "blocking_issues": 0,
     "warnings": 2,
-    "passed_checks": 12
+    "passed_checks": 14
   },
   "checks": {
     "typescript_compilation": {
