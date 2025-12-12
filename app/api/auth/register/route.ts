@@ -105,7 +105,9 @@ export async function POST(request: NextRequest) {
       // Try to clean up auth user
       try {
         await supabaseAdmin.auth.admin.deleteUser(userId);
-      } catch {}
+      } catch (cleanupError: any) {
+        console.warn("[Register] Failed to cleanup user after org creation error:", cleanupError.message);
+      }
       return NextResponse.json(
         { error: "Failed to create organization: " + orgError.message },
         { status: 500 }
@@ -128,7 +130,9 @@ export async function POST(request: NextRequest) {
       try {
         await supabaseAdmin.from("organizations").delete().eq("id", orgData.id);
         await supabaseAdmin.auth.admin.deleteUser(userId);
-      } catch {}
+      } catch (cleanupError: any) {
+        console.warn("[Register] Failed to cleanup after profile creation error:", cleanupError.message);
+      }
       return NextResponse.json(
         { error: "Failed to create profile: " + profileError.message },
         { status: 500 }

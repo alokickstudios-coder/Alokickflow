@@ -78,6 +78,10 @@ jobs:
       - name: Run unit tests
         run: npm test -- --coverage --passWithNoTests
         env:
+          
+      - name: Run contract tests
+        run: npm test -- --testPathPattern=contracts --passWithNoTests
+        env:
           NODE_ENV: test
           
       - name: Upload coverage

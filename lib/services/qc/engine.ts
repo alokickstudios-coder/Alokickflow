@@ -518,14 +518,20 @@ async function isCreativeQCToggleEnabled(organisationId: string): Promise<boolea
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    const { data } = await adminClient
+    const { data, error } = await adminClient
       .from("organizations")
       .select("creative_qc_settings")
       .eq("id", organisationId)
       .single();
 
+    if (error) {
+      console.warn(`[QCEngine] Failed to check Creative QC settings for org ${organisationId}:`, error.message);
+      return false;
+    }
+
     return data?.creative_qc_settings?.enabled === true;
-  } catch {
+  } catch (error: any) {
+    console.warn(`[QCEngine] Unexpected error checking Creative QC settings:`, error.message);
     return false;
   }
 }

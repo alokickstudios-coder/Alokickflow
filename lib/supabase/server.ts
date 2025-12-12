@@ -37,19 +37,24 @@ export async function createClient() {
         set(name: string, value: string, options: CookieOptions) {
           try {
             cookieStore.set({ name, value, ...options });
-          } catch {
+          } catch (cookieError: any) {
             // The `set` method was called from a Server Component.
-            // This can be ignored if you have middleware refreshing
-            // user sessions.
+            // This can be ignored if you have middleware refreshing user sessions.
+            // Log at debug level for troubleshooting auth issues.
+            if (process.env.DEBUG === 'true') {
+              console.debug(`[Supabase] Cookie set skipped (Server Component):`, name);
+            }
           }
         },
         remove(name: string, options: CookieOptions) {
           try {
             cookieStore.set({ name, value: '', ...options });
-          } catch {
+          } catch (cookieError: any) {
             // The `remove` method was called from a Server Component.
-            // This can be ignored if you have middleware refreshing
-            // user sessions.
+            // This can be ignored if you have middleware refreshing user sessions.
+            if (process.env.DEBUG === 'true') {
+              console.debug(`[Supabase] Cookie remove skipped (Server Component):`, name);
+            }
           }
         },
       },

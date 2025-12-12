@@ -255,8 +255,9 @@ async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness'
 
       if (iMatch) inputI = parseFloat(iMatch[1]);
       if (tpMatch) inputTP = parseFloat(tpMatch[1]);
-    } catch {
+    } catch (parseError: any) {
       // Fallback: try to extract from text output
+      console.debug(`[BasicQC] JSON parse fallback for loudness, trying text format:`, parseError.message);
       const iMatch = stdout.match(/Input Integrated:\s*([-\d.]+)/i);
       const tpMatch = stdout.match(/Input True Peak:\s*([-\d.]+)/i);
       
@@ -762,7 +763,8 @@ function createMinimalQCResult(): BasicQCResult {
     if (isCloud && !hasFFmpegSupport()) {
       skipMessage = 'FFmpeg not available in this environment. Configure QC Worker for video processing.';
     }
-  } catch {
+  } catch (platformError: any) {
+    console.debug(`[BasicQC] Platform config unavailable, using fallback detection:`, platformError.message);
     isCloud = !!(process.env.VERCEL || process.env.RENDER || process.env.RAILWAY_ENVIRONMENT);
     skipMessage = isCloud 
       ? 'FFmpeg not available in cloud environment. Full video analysis requires QC Worker.'

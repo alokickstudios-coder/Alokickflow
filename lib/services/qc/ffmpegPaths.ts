@@ -20,8 +20,9 @@ function findBinary(name: string): string | null {
     // Try 'which' (Unix/Linux/Mac)
     const path = execSync(`which ${name} 2>/dev/null`, { encoding: 'utf-8' }).trim();
     if (path) return path;
-  } catch {
-    // Try common paths directly
+  } catch (whichError: any) {
+    // 'which' command failed, try common paths directly
+    console.debug(`[FFmpegPaths] 'which ${name}' failed, checking common paths`);
     const commonPaths = [
       `/usr/bin/${name}`,
       `/usr/local/bin/${name}`,
@@ -32,8 +33,9 @@ function findBinary(name: string): string | null {
       try {
         execSync(`test -x "${p}"`, { encoding: 'utf-8' });
         return p;
-      } catch {
-        // Continue to next path
+      } catch (pathError: any) {
+        // Path doesn't exist or isn't executable, continue to next
+        continue;
       }
     }
   }
@@ -83,7 +85,8 @@ export function isFFmpegAvailable(): boolean {
   try {
     getFFmpegPath();
     return true;
-  } catch {
+  } catch (error: any) {
+    console.debug(`[FFmpegPaths] FFmpeg not available: ${error.message}`);
     return false;
   }
 }
@@ -95,7 +98,8 @@ export function isFFprobeAvailable(): boolean {
   try {
     getFFprobePath();
     return true;
-  } catch {
+  } catch (error: any) {
+    console.debug(`[FFmpegPaths] FFprobe not available: ${error.message}`);
     return false;
   }
 }
@@ -117,15 +121,15 @@ export function getFFmpegDiagnostics(): {
   try {
     ffmpegPath = getFFmpegPath();
     ffmpegAvailable = true;
-  } catch {
-    // Not available
+  } catch (ffmpegError: any) {
+    console.debug(`[FFmpegPaths] FFmpeg diagnostic: ${ffmpegError.message}`);
   }
 
   try {
     ffprobePath = getFFprobePath();
     ffprobeAvailable = true;
-  } catch {
-    // Not available
+  } catch (ffprobeError: any) {
+    console.debug(`[FFmpegPaths] FFprobe diagnostic: ${ffprobeError.message}`);
   }
 
   return {

@@ -117,8 +117,12 @@ export async function POST(request: NextRequest) {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },
           body: JSON.stringify({ limit: 5 }),
-        }).catch(() => {});
-      } catch (e) {}
+        }).catch((fetchErr) => {
+          console.warn("[PauseQC] Failed to trigger worker after resume:", fetchErr.message);
+        });
+      } catch (triggerError: any) {
+        console.warn("[PauseQC] Failed to trigger worker:", triggerError.message);
+      }
 
       return NextResponse.json({
         success: true,

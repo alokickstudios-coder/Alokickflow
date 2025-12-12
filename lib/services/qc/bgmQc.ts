@@ -129,8 +129,9 @@ export async function runBGMQC(
       try {
         const fs = await import('fs/promises');
         await fs.unlink(filePath);
-      } catch {
-        // Ignore cleanup errors
+      } catch (cleanupError: any) {
+        // Non-critical: temp file cleanup is best-effort
+        console.debug("[BGM-QC] Temp file cleanup skipped:", cleanupError.message);
       }
     }
 

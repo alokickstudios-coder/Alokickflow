@@ -128,8 +128,9 @@ export async function runVideoGlitchQC(
       try {
         const fs = await import('fs/promises');
         await fs.unlink(filePath);
-      } catch {
-        // Ignore cleanup errors
+      } catch (cleanupError: any) {
+        // Non-critical: temp file cleanup is best-effort
+        console.debug("[VideoGlitch-QC] Temp file cleanup skipped:", cleanupError.message);
       }
     }
 

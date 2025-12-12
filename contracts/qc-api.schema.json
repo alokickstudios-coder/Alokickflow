@@ -1,0 +1,272 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "QC API Contracts",
+  "description": "JSON Schema contracts for QC API endpoints",
+  "definitions": {
+    "QCJob": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Unique job identifier"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["queued", "running", "completed", "failed", "cancelled", "paused"],
+          "description": "Current job status"
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Processing progress percentage"
+        },
+        "file_name": {
+          "type": "string",
+          "description": "Name of the file being processed"
+        },
+        "source_type": {
+          "type": "string",
+          "enum": ["upload", "drive_link"],
+          "description": "Source type of the file"
+        },
+        "error_message": {
+          "type": ["string", "null"],
+          "description": "Error message if job failed"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Job creation timestamp"
+        },
+        "started_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Processing start timestamp"
+        },
+        "completed_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Processing completion timestamp"
+        }
+      }
+    },
+    "QCResult": {
+      "type": "object",
+      "properties": {
+        "overallStatus": {
+          "type": "string",
+          "enum": ["passed", "failed", "needs_review"],
+          "description": "Overall QC result status"
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Overall QC score"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QCIssue"
+          },
+          "description": "List of detected issues"
+        }
+      }
+    },
+    "QCIssue": {
+      "type": "object",
+      "required": ["type", "severity"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Type of issue"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "warning", "info"],
+          "description": "Issue severity"
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable issue description"
+        },
+        "timestamp": {
+          "type": ["string", "number", "null"],
+          "description": "Timestamp in the media where issue occurs"
+        }
+      }
+    },
+    "HealthResponse": {
+      "type": "object",
+      "required": ["status", "timestamp"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["healthy", "degraded", "unhealthy"],
+          "description": "Overall system health status"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Health check timestamp"
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ServiceHealth"
+          },
+          "description": "Individual service health statuses"
+        }
+      }
+    },
+    "ServiceHealth": {
+      "type": "object",
+      "required": ["name", "status"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Service name"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ok", "error", "warning", "not_configured"],
+          "description": "Service status"
+        },
+        "latency": {
+          "type": "number",
+          "description": "Service response latency in ms"
+        },
+        "message": {
+          "type": "string",
+          "description": "Status message"
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "string",
+          "description": "Error message"
+        },
+        "code": {
+          "type": "string",
+          "description": "Error code"
+        },
+        "details": {
+          "type": "object",
+          "description": "Additional error details"
+        }
+      }
+    },
+    "DLQEntry": {
+      "type": "object",
+      "required": ["id", "job_id", "failure_reason", "status"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "DLQ entry ID"
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Original job ID"
+        },
+        "failure_reason": {
+          "type": "string",
+          "description": "Reason for failure"
+        },
+        "failure_code": {
+          "type": "string",
+          "description": "Failure code for categorization"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "retrying", "resolved", "abandoned"],
+          "description": "DLQ entry status"
+        },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of retry attempts"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Entry creation timestamp"
+        }
+      }
+    }
+  },
+  "endpoints": {
+    "/api/health": {
+      "GET": {
+        "response": {
+          "$ref": "#/definitions/HealthResponse"
+        }
+      }
+    },
+    "/api/qc/jobs": {
+      "GET": {
+        "response": {
+          "type": "object",
+          "required": ["jobs"],
+          "properties": {
+            "jobs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/QCJob"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/qc/progress": {
+      "GET": {
+        "response": {
+          "type": "object",
+          "required": ["jobs"],
+          "properties": {
+            "jobs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "status", "progress"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "status": { "type": "string" },
+                  "progress": { "type": "integer" },
+                  "error": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/dlq": {
+      "GET": {
+        "response": {
+          "type": "object",
+          "required": ["success", "entries"],
+          "properties": {
+            "success": { "type": "boolean" },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DLQEntry"
+              }
+            },
+            "total": { "type": "integer" }
+          }
+        }
+      }
+    }
+  }
+}

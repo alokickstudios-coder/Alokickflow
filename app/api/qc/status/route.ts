@@ -80,7 +80,9 @@ export async function GET(request: NextRequest) {
     try {
       const { stdout: ffmpegPath } = await execAsync("which ffmpeg");
       diagnostics.ffmpeg.path = ffmpegPath.trim();
-    } catch {}
+    } catch (pathError: any) {
+      console.debug("[QCStatus] FFmpeg path lookup failed:", pathError.message);
+    }
   } catch (error: any) {
     diagnostics.ffmpeg.error = error.message;
   }
@@ -94,7 +96,9 @@ export async function GET(request: NextRequest) {
     try {
       const { stdout: ffprobePath } = await execAsync("which ffprobe");
       diagnostics.ffprobe.path = ffprobePath.trim();
-    } catch {}
+    } catch (pathError: any) {
+      console.debug("[QCStatus] FFprobe path lookup failed:", pathError.message);
+    }
   } catch (error: any) {
     diagnostics.ffprobe.error = error.message;
   }

@@ -44,8 +44,8 @@ async function getGoogleConfig() {
           clientSecret: data.google_client_secret,
         };
       }
-    } catch {
-      // fall back below
+    } catch (adminError: any) {
+      console.debug("[GoogleAuth] Admin client config lookup failed, trying server client:", adminError.message);
     }
   }
 
@@ -64,8 +64,8 @@ async function getGoogleConfig() {
         clientSecret: data.google_client_secret,
       };
     }
-  } catch {
-    // ignore and fall back to env
+  } catch (serverError: any) {
+    console.debug("[GoogleAuth] Server client config lookup failed, using env vars:", serverError.message);
   }
 
   // 3) Final fallback: environment variables

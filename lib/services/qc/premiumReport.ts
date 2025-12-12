@@ -163,8 +163,9 @@ Be concise but thorough.`;
       // Try to extract JSON from markdown code blocks
       const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
       parsedContent = JSON.parse(jsonMatch ? jsonMatch[1] : content);
-    } catch {
-      // If parsing fails, use basic report
+    } catch (parseError: any) {
+      // If parsing fails, log and use basic report
+      console.warn("[PremiumReport] AI response parse failed, using basic report:", parseError.message);
       return generateBasicReport(basicQCResult, additionalQCResults);
     }
 

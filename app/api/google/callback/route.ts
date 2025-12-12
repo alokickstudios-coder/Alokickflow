@@ -38,8 +38,8 @@ async function getGoogleConfig() {
           clientSecret: data.google_client_secret,
         };
       }
-    } catch {
-      // fall through
+    } catch (adminError: any) {
+      console.debug("[GoogleCallback] Admin client config lookup failed, trying server client:", adminError.message);
     }
   }
 
@@ -58,8 +58,8 @@ async function getGoogleConfig() {
         clientSecret: data.google_client_secret,
       };
     }
-  } catch {
-    // ignore and use env
+  } catch (serverError: any) {
+    console.debug("[GoogleCallback] Server client config lookup failed, using env vars:", serverError.message);
   }
 
   // 3) Final fallback: environment variables
@@ -164,8 +164,9 @@ export async function GET(request: NextRequest) {
               .from("google_tokens")
               .delete()
               .eq("user_id", user.id);
-          } catch {
-            // Ignore errors if delete fails (token might not exist)
+          } catch (deleteError: any) {
+            // Non-critical: token might not exist, just log at debug level
+            console.debug("[GoogleCallback] Token cleanup skipped:", deleteError.message);
           }
           
           // Insert new token
@@ -188,8 +189,8 @@ export async function GET(request: NextRequest) {
                 .from("google_tokens")
                 .delete()
                 .eq("id", "default");
-            } catch {
-              // Ignore errors
+            } catch (defaultDeleteError: any) {
+              console.debug("[GoogleCallback] Default token cleanup skipped:", defaultDeleteError.message);
             }
               
             await supabase.from("google_tokens").insert({

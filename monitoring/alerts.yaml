@@ -49,6 +49,84 @@ alerts:
     runbook_url: /runbooks/qc-queue-management.md
 
   # ============================================
+  # DLQ ALERTS
+  # ============================================
+  
+  - name: dlq_length_high
+    description: Dead Letter Queue has too many pending entries
+    query: |
+      SELECT COUNT(*) 
+      FROM job_dlq 
+      WHERE status = 'pending'
+    threshold: 10
+    comparison: ">="
+    severity: warning
+    notification_channels:
+      - slack-oncall
+    runbook_url: /runbooks/dlq-operate.md
+    
+  - name: dlq_abandoned_high
+    description: Too many jobs abandoned after max retries
+    query: |
+      SELECT COUNT(*) 
+      FROM job_dlq 
+      WHERE status = 'abandoned'
+        AND created_at > NOW() - INTERVAL '24 hours'
+    threshold: 5
+    comparison: ">="
+    severity: critical
+    notification_channels:
+      - slack-oncall
+      - pagerduty
+    runbook_url: /runbooks/dlq-operate.md
+    
+  - name: dlq_growth_rate_high
+    description: DLQ is growing faster than expected
+    query: |
+      SELECT COUNT(*) 
+      FROM job_dlq 
+      WHERE created_at > NOW() - INTERVAL '1 hour'
+    threshold: 10
+    comparison: ">="
+    severity: warning
+    notification_channels:
+      - slack-engineering
+    runbook_url: /runbooks/dlq-operate.md
+
+  # ============================================
+  # HEARTBEAT/WATCHDOG ALERTS
+  # ============================================
+  
+  - name: heartbeat_missed_high
+    description: Too many jobs missed heartbeat
+    query: |
+      SELECT COUNT(*) 
+      FROM qc_jobs 
+      WHERE status = 'running'
+        AND last_heartbeat_at < NOW() - INTERVAL '2 minutes'
+    threshold: 5
+    comparison: ">="
+    severity: critical
+    notification_channels:
+      - slack-oncall
+      - pagerduty
+    runbook_url: /runbooks/heartbeat-watchdog.md
+    
+  - name: watchdog_not_running
+    description: Watchdog has not run recently
+    query: |
+      SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) as seconds_since_watchdog
+      FROM qc_jobs 
+      WHERE status = 'failed' 
+        AND error_message LIKE '%Watchdog%'
+    threshold: 600  # 10 minutes
+    comparison: ">="
+    severity: warning
+    notification_channels:
+      - slack-engineering
+    runbook_url: /runbooks/heartbeat-watchdog.md
+
+  # ============================================
   # API HEALTH ALERTS
   # ============================================
   

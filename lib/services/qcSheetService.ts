@@ -494,8 +494,9 @@ export async function getVendorForProject(projectId: string): Promise<VendorInfo
         };
       }
     }
-  } catch {
-    // Assignments table may not exist, continue
+  } catch (assignmentError: any) {
+    // Assignments table may not exist in all deployments
+    console.debug("[QCSheetService] Assignment lookup skipped:", assignmentError.message);
   }
 
   return null;

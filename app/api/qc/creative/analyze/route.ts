@@ -230,8 +230,9 @@ export async function POST(request: NextRequest) {
         },
         performed_by: user.id,
       });
-    } catch {
-      // Ignore audit log errors
+    } catch (auditError: any) {
+      // Non-critical: audit logging shouldn't block the response
+      console.warn("[CreativeQC] Audit log failed:", auditError.message);
     }
     console.log(`[Creative QC API] Analysis ${result.status} for job ${jobId}`);
 

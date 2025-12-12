@@ -49,7 +49,8 @@ export function extractDriveId(url: string): { id: string; type: 'file' | 'folde
     }
 
     return null;
-  } catch {
+  } catch (parseError: any) {
+    console.debug("[GoogleDrive] URL parse failed:", parseError.message);
     return null;
   }
 }

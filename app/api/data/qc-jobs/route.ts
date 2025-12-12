@@ -143,8 +143,9 @@ export async function DELETE(request: NextRequest) {
             .from("deliveries")
             .delete()
             .eq("id", job.delivery_id);
-        } catch {
-          // Ignore delivery delete errors
+        } catch (deliveryDeleteError: any) {
+          // Non-critical: log but don't fail the job deletion
+          console.warn(`[QC-Jobs] Failed to delete associated delivery ${job.delivery_id}:`, deliveryDeleteError.message);
         }
       }
 

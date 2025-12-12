@@ -271,8 +271,9 @@ export async function POST(request: NextRequest) {
         details: settingsUpdate,
         performed_by: user.id,
       });
-    } catch {
-      // Ignore audit log errors
+    } catch (auditError: any) {
+      // Non-critical: audit logging shouldn't block the response
+      console.warn("[CreativeQCSettings] Audit log failed:", auditError.message);
     }
 
     // Fetch and return updated settings

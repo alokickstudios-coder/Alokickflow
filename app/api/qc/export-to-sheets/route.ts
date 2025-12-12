@@ -360,8 +360,9 @@ export async function POST(request: NextRequest) {
           );
         }
       }
-    } catch {
-      // Non-critical, ignore
+    } catch (freezeError: any) {
+      // Non-critical: header freeze is cosmetic
+      console.debug("[ExportToSheets] Header freeze skipped:", freezeError.message);
     }
 
     logQCEvent.exportCompleted(sheetId, projectId, organisationId || "");
@@ -386,8 +387,9 @@ export async function POST(request: NextRequest) {
             finalUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/edit#gid=${targetSheet.properties.sheetId}`;
           }
         }
-      } catch {
-        // Use default URL
+      } catch (tabLookupError: any) {
+        // Non-critical: just use default URL without tab focus
+        console.debug("[ExportToSheets] Tab GID lookup skipped:", tabLookupError.message);
       }
     }
 
