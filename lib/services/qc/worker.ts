@@ -486,7 +486,7 @@ async function processQcJobDirect(
     await updateJobProgress(jobId, 45, adminClient, "analyzing");
     console.log(`[QCWorker] Running QC analysis on ${context.filePath}`);
     
-    const QC_ANALYSIS_TIMEOUT_MS = 180000; // 3 minutes max for QC analysis
+    const QC_ANALYSIS_TIMEOUT_MS = 90000; // 90 seconds max for QC analysis (optimized)
     
     let qcResult: any;
     try {

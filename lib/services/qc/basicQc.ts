@@ -258,11 +258,11 @@ async function checkAudioMissing(filePath: string): Promise<BasicQCResult['audio
  */
 async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness']> {
   try {
-    // Use ffmpeg loudnorm filter with timeout (60 seconds max)
-    // Add -t 120 to only analyze first 2 minutes for speed
+    // Use ffmpeg loudnorm filter with timeout (30 seconds max)
+    // Add -t 30 to only analyze first 30 seconds for FAST processing
     const { stdout } = await execAsync(
-      `"${getFFmpeg()}" -t 120 -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`,
-      { timeout: 60000 } // 60 second timeout
+      `"${getFFmpeg()}" -t 30 -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`,
+      { timeout: 30000 } // 30 second timeout
     );
 
     // Parse JSON output
@@ -330,10 +330,11 @@ async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness'
  */
 async function checkSilence(filePath: string): Promise<BasicQCResult['silence']> {
   try {
-    // Use ffmpeg silencedetect filter with timeout (45 seconds max)
+    // Use ffmpeg silencedetect filter with timeout (20 seconds max)
+    // Analyze first 60 seconds only for FAST processing
     const { stderr } = await execAsync(
-      `"${getFFmpeg()}" -t 180 -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`,
-      { timeout: 45000 } // 45 second timeout
+      `"${getFFmpeg()}" -t 60 -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`,
+      { timeout: 20000 } // 20 second timeout
     );
 
     const segments: Array<{ start: number; end: number; duration: number }> = [];
@@ -549,10 +550,10 @@ async function checkMissingBGM(
 
   try {
     // Analyze audio spectrum to detect BGM presence
-    // Use ffmpeg to analyze frequency bands (limit to first 60 seconds)
+    // Use ffmpeg to analyze frequency bands (limit to first 20 seconds for FAST processing)
     const { stdout } = await execAsync(
-      `"${getFFmpeg()}" -t 60 -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -20`,
-      { timeout: 30000 } // 30 second timeout
+      `"${getFFmpeg()}" -t 20 -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -20`,
+      { timeout: 15000 } // 15 second timeout
     );
 
     // Check audio channels (stereo typically has BGM)
