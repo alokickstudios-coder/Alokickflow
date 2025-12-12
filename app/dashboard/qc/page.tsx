@@ -281,11 +281,56 @@ export default function QCResultsPage() {
   const handlePause = async (job: QCJob) => {
     try {
       setActionLoading((prev) => new Set(prev).add(job.id));
-      await fetch("/api/qc/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobIds: [job.id] }) });
-      toast({ title: "Job paused" });
+      const response = await fetch("/api/qc/pause", { 
+        method: "POST", 
+        headers: { "Content-Type": "application/json" }, 
+        body: JSON.stringify({ jobIds: [job.id], action: "pause" }) 
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to pause");
+      toast({ title: "Job paused", description: `${job.file_name} has been paused.` });
       fetchQCJobs();
-    } catch {
-      toast({ title: "Failed to pause", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Failed to pause", description: error.message, variant: "destructive" });
+    } finally {
+      setActionLoading((prev) => { const next = new Set(prev); next.delete(job.id); return next; });
+    }
+  };
+
+  const handleResume = async (job: QCJob) => {
+    try {
+      setActionLoading((prev) => new Set(prev).add(job.id));
+      const response = await fetch("/api/qc/pause", { 
+        method: "POST", 
+        headers: { "Content-Type": "application/json" }, 
+        body: JSON.stringify({ jobIds: [job.id], action: "resume" }) 
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to resume");
+      toast({ title: "Job resumed", description: `${job.file_name} will be processed.` });
+      fetchQCJobs();
+    } catch (error: any) {
+      toast({ title: "Failed to resume", description: error.message, variant: "destructive" });
+    } finally {
+      setActionLoading((prev) => { const next = new Set(prev); next.delete(job.id); return next; });
+    }
+  };
+
+  const handleCancel = async (job: QCJob) => {
+    if (!confirm(`Cancel processing "${job.file_name}"?`)) return;
+    try {
+      setActionLoading((prev) => new Set(prev).add(job.id));
+      const response = await fetch("/api/qc/cancel", { 
+        method: "POST", 
+        headers: { "Content-Type": "application/json" }, 
+        body: JSON.stringify({ jobIds: [job.id] }) 
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to cancel");
+      toast({ title: "Job cancelled" });
+      fetchQCJobs();
+    } catch (error: any) {
+      toast({ title: "Failed to cancel", description: error.message, variant: "destructive" });
     } finally {
       setActionLoading((prev) => { const next = new Set(prev); next.delete(job.id); return next; });
     }

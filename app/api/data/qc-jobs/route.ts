@@ -75,6 +75,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: session.error || "Unauthorized" }, { status: 401 });
     }
 
+    const { organizationId } = session.data!;
     const adminClient = getAdminClient();
     if (!adminClient) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
@@ -82,28 +83,83 @@ export async function DELETE(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
+    const ids = searchParams.get("ids"); // Support multiple IDs
 
-    if (!id) {
-      return NextResponse.json({ error: "Job ID required" }, { status: 400 });
+    const jobIds = ids ? ids.split(",") : id ? [id] : [];
+
+    if (jobIds.length === 0) {
+      return NextResponse.json({ error: "Job ID(s) required" }, { status: 400 });
     }
 
-    // Get job to find delivery_id
-    const { data: job } = await adminClient
-      .from("qc_jobs")
-      .select("delivery_id")
-      .eq("id", id)
-      .single();
+    console.log(`[QC-Jobs] Deleting ${jobIds.length} job(s):`, jobIds);
 
-    // Delete job
-    await adminClient.from("qc_jobs").delete().eq("id", id);
+    let deleted = 0;
+    for (const jobId of jobIds) {
+      // Get job to verify ownership and find delivery_id
+      const { data: job, error: jobError } = await adminClient
+        .from("qc_jobs")
+        .select("id, delivery_id, organisation_id, status")
+        .eq("id", jobId)
+        .single();
 
-    // Delete associated delivery if exists
-    if (job?.delivery_id) {
-      await adminClient.from("deliveries").delete().eq("id", job.delivery_id);
+      if (jobError || !job) {
+        console.warn(`[QC-Jobs] Job ${jobId} not found`);
+        continue;
+      }
+
+      // Verify ownership
+      if (job.organisation_id !== organizationId) {
+        console.warn(`[QC-Jobs] Job ${jobId} belongs to different org`);
+        continue;
+      }
+
+      // If job is running, cancel it first
+      if (job.status === "running" || job.status === "queued" || job.status === "pending") {
+        await adminClient
+          .from("qc_jobs")
+          .update({ 
+            status: "cancelled", 
+            error_message: "Deleted by user",
+            completed_at: new Date().toISOString() 
+          })
+          .eq("id", jobId);
+      }
+
+      // Delete job
+      const { error: deleteError } = await adminClient
+        .from("qc_jobs")
+        .delete()
+        .eq("id", jobId);
+
+      if (deleteError) {
+        console.error(`[QC-Jobs] Delete error for ${jobId}:`, deleteError);
+        continue;
+      }
+
+      // Delete associated delivery if exists
+      if (job.delivery_id) {
+        try {
+          await adminClient
+            .from("deliveries")
+            .delete()
+            .eq("id", job.delivery_id);
+        } catch {
+          // Ignore delivery delete errors
+        }
+      }
+
+      deleted++;
     }
 
-    return NextResponse.json({ success: true });
+    console.log(`[QC-Jobs] Successfully deleted ${deleted}/${jobIds.length} job(s)`);
+
+    return NextResponse.json({ 
+      success: true, 
+      deleted, 
+      requested: jobIds.length 
+    });
   } catch (error: any) {
+    console.error("[QC-Jobs DELETE] Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

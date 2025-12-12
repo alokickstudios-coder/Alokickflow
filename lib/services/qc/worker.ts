@@ -264,33 +264,50 @@ export async function processBatch(limit: number = 5): Promise<{ processed: numb
     console.log(`[QCWorker] Using default limits: maxConcurrent=1`);
   }
 
-  // AUTO-RECOVERY: Reset jobs stuck in "running" for > 5 minutes
+  // AUTO-RECOVERY: Reset jobs stuck in "running" for > 2 minutes
+  // Check both started_at AND updated_at to catch all stuck scenarios
   try {
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    const { data: stuckJobs, error: stuckError } = await adminClient
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    
+    // Get ALL running jobs first
+    const { data: runningJobs, error: runningError } = await adminClient
       .from("qc_jobs")
-      .select("id, file_name, started_at")
-      .eq("status", "running")
-      .lt("started_at", fiveMinutesAgo);
+      .select("id, file_name, started_at, updated_at, progress")
+      .eq("status", "running");
 
-    if (!stuckError && stuckJobs && stuckJobs.length > 0) {
-      console.log(`[QCWorker] Found ${stuckJobs.length} stuck job(s), resetting...`);
-      for (const stuck of stuckJobs) {
-        console.log(`[QCWorker] Resetting stuck job: ${stuck.id} (${stuck.file_name})`);
-        await adminClient
-          .from("qc_jobs")
-          .update({
-            status: "queued",
-            progress: 0,
-            error_message: "Auto-reset: job was stuck",
-            started_at: null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", stuck.id);
+    if (!runningError && runningJobs && runningJobs.length > 0) {
+      const stuckJobs = runningJobs.filter(job => {
+        // Job is stuck if:
+        // 1. started_at is more than 2 minutes ago, OR
+        // 2. updated_at is more than 2 minutes ago AND progress < 50
+        const startedAt = job.started_at ? new Date(job.started_at) : null;
+        const updatedAt = job.updated_at ? new Date(job.updated_at) : null;
+        const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+        
+        if (startedAt && startedAt < twoMinAgo) return true;
+        if (updatedAt && updatedAt < twoMinAgo && (job.progress || 0) < 50) return true;
+        return false;
+      });
+
+      if (stuckJobs.length > 0) {
+        console.log(`[QCWorker] Found ${stuckJobs.length} stuck job(s), resetting...`);
+        for (const stuck of stuckJobs) {
+          console.log(`[QCWorker] Resetting stuck job: ${stuck.id} (${stuck.file_name}) - was at ${stuck.progress}%`);
+          await adminClient
+            .from("qc_jobs")
+            .update({
+              status: "failed",
+              progress: 100,
+              error_message: `Processing timeout - job stuck at ${stuck.progress || 0}%. Please retry.`,
+              completed_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", stuck.id);
+        }
       }
     }
-  } catch (stuckCheckError) {
-    console.warn("[QCWorker] Stuck job check failed:", stuckCheckError);
+  } catch (stuckCheckError: any) {
+    console.warn("[QCWorker] Stuck job check failed:", stuckCheckError.message);
   }
 
   // Cap at provided limit
@@ -598,7 +615,20 @@ async function updateJobProgress(
 }
 
 /**
+ * Wrap a promise with a timeout
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => 
+      setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+    )
+  ]);
+}
+
+/**
  * Resolve file context based on source_type
+ * Includes 60-second timeout for file downloads
  */
 async function resolveFileContext(
   job: QcJobRow,
@@ -608,14 +638,35 @@ async function resolveFileContext(
     throw new Error("Job missing source_path");
   }
 
-  if (job.source_type === "drive_link") {
-    // Google Drive file - download via API
-    return await resolveDriveFile(job.source_path, adminClient!, job);
-  } else if (job.source_type === "upload") {
-    // Supabase Storage file - download from bucket
-    return await resolveStorageFile(job.source_path, adminClient!);
-  } else {
-    throw new Error(`Unknown source_type: ${job.source_type}`);
+  const DOWNLOAD_TIMEOUT_MS = 60000; // 60 seconds
+
+  try {
+    if (job.source_type === "drive_link") {
+      // Google Drive file - download via API with timeout
+      return await withTimeout(
+        resolveDriveFile(job.source_path, adminClient!, job),
+        DOWNLOAD_TIMEOUT_MS,
+        "Google Drive download timed out after 60 seconds. File may be too large or connection is slow."
+      );
+    } else if (job.source_type === "upload") {
+      // Supabase Storage file - download from bucket with timeout
+      return await withTimeout(
+        resolveStorageFile(job.source_path, adminClient!),
+        DOWNLOAD_TIMEOUT_MS,
+        "File download timed out after 60 seconds. File may be too large."
+      );
+    } else {
+      throw new Error(`Unknown source_type: ${job.source_type}`);
+    }
+  } catch (error: any) {
+    // Enhance error message
+    if (error.message.includes("token") || error.message.includes("401") || error.message.includes("403")) {
+      throw new Error(`Google Drive access denied. Please reconnect Google Drive in Settings.`);
+    }
+    if (error.message.includes("404") || error.message.includes("not found")) {
+      throw new Error(`File not found. It may have been deleted or moved.`);
+    }
+    throw error;
   }
 }
 

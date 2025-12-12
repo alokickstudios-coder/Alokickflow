@@ -297,17 +297,17 @@ export default function BulkQCPage() {
   const handlePause = async (result: QCJobResult) => {
     try {
       setCancellingIds((prev) => new Set(prev).add(result.id));
-      const response = await fetch("/api/qc/cancel", {
+      const response = await fetch("/api/qc/pause", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobIds: [result.id] }),
+        body: JSON.stringify({ jobIds: [result.id], action: "pause" }),
       });
 
+      const data = await response.json().catch(() => ({}));
       if (response.ok) {
         toast({ title: "Job paused", description: `${result.original_file_name || result.file_name} has been paused.` });
         fetchResults();
       } else {
-        const data = await response.json().catch(() => ({}));
         throw new Error(data.error || "Failed to pause job");
       }
     } catch (error: any) {

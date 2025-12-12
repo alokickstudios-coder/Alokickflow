@@ -48,16 +48,16 @@ export async function GET(request: NextRequest) {
       byStatus[status].push(job);
     }
 
-    // Find stuck jobs (running for > 10 minutes or queued for > 30 minutes)
+    // Find stuck jobs (running for > 2 minutes or queued for > 10 minutes)
     const now = Date.now();
     const stuckJobs = jobs.filter(job => {
       if (job.status === "running") {
         const startTime = job.started_at ? new Date(job.started_at).getTime() : new Date(job.created_at).getTime();
-        return (now - startTime) > 10 * 60 * 1000; // 10 minutes
+        return (now - startTime) > 2 * 60 * 1000; // 2 minutes
       }
       if (job.status === "queued" || job.status === "pending") {
         const createTime = new Date(job.created_at).getTime();
-        return (now - createTime) > 30 * 60 * 1000; // 30 minutes
+        return (now - createTime) > 10 * 60 * 1000; // 10 minutes
       }
       return false;
     });
