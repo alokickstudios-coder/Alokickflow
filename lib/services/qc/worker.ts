@@ -391,19 +391,34 @@ export async function processBatch(limit: number = 5): Promise<{ processed: numb
 /**
  * Check if job has been cancelled or paused
  */
+/**
+ * Check if job has been cancelled or paused
+ * 
+ * IMPORTANT: This function must NOT silently swallow errors.
+ * A database error should be treated as "unknown state" and logged.
+ */
 async function isJobCancelled(
   jobId: string,
   adminClient: ReturnType<typeof getAdminClient>
 ): Promise<boolean> {
   try {
-    const { data } = await adminClient!
+    const { data, error } = await adminClient!
       .from("qc_jobs")
       .select("status")
       .eq("id", jobId)
       .single();
     
+    if (error) {
+      // Log the error but don't throw - treat as "not cancelled" to allow retry
+      console.error(`[QCWorker] isJobCancelled DB error for ${jobId}:`, error.message);
+      return false;
+    }
+    
     return data?.status === "cancelled" || data?.status === "paused";
-  } catch {
+  } catch (error: any) {
+    // Log unexpected errors - this helps debug silent failures
+    console.error(`[QCWorker] isJobCancelled unexpected error for ${jobId}:`, error.message);
+    // Return false to allow the job to continue - will fail at next checkpoint if DB is down
     return false;
   }
 }
@@ -941,7 +956,10 @@ async function resolveDriveFile(
   try {
     const { getProcessingLimits } = await import("@/lib/config/platform");
     maxFileSizeMB = getProcessingLimits().maxFileSizeMB;
-  } catch (e) {}
+  } catch (platformError: any) {
+    // Log but continue with default - platform config is optional
+    console.warn(`[QCWorker] Platform config unavailable, using default maxFileSizeMB=${maxFileSizeMB}:`, platformError.message);
+  }
   
   if (fileSizeMB > maxFileSizeMB) {
     throw new Error(`File too large (${fileSizeMB.toFixed(1)}MB). Maximum allowed: ${maxFileSizeMB}MB. Please use a smaller file or upgrade your plan.`);
@@ -974,7 +992,10 @@ async function resolveDriveFile(
     if (!isCloudEnvironment()) {
       tempDir = join(process.cwd(), "tmp", "qc-processing");
     }
-  } catch (e) {}
+  } catch (platformError: any) {
+    // Log but continue with default - platform detection is optional
+    console.debug(`[QCWorker] Platform detection unavailable, using default tempDir=${tempDir}`);
+  }
   
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
@@ -1018,8 +1039,9 @@ async function resolveDriveFile(
         const { unlink } = await import("fs/promises");
         await unlink(tempPath);
         console.log(`[QCWorker] Cleaned up temp file: ${tempPath}`);
-      } catch (e) {
-        // Ignore cleanup errors
+      } catch (cleanupError: any) {
+        // Log cleanup errors but don't throw - cleanup is best-effort
+        console.warn(`[QCWorker] Temp file cleanup failed for ${tempPath}:`, cleanupError.message);
       }
     },
   };
@@ -1047,7 +1069,9 @@ async function resolveStorageFile(
   try {
     const { getProcessingLimits } = await import("@/lib/config/platform");
     maxFileSizeMB = getProcessingLimits().maxFileSizeMB;
-  } catch (e) {}
+  } catch (platformError: any) {
+    console.warn(`[QCWorker] Platform config unavailable for storage file, using default maxFileSizeMB=${maxFileSizeMB}`);
+  }
   
   if (fileSizeMB > maxFileSizeMB) {
     throw new Error(`File too large (${fileSizeMB.toFixed(1)}MB). Maximum: ${maxFileSizeMB}MB`);
@@ -1067,7 +1091,9 @@ async function resolveStorageFile(
     if (!isCloudEnvironment()) {
       tempDir = join(process.cwd(), "tmp", "qc-processing");
     }
-  } catch (e) {}
+  } catch (platformError: any) {
+    console.debug(`[QCWorker] Platform detection unavailable for storage, using default tempDir=${tempDir}`);
+  }
   
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
@@ -1084,8 +1110,8 @@ async function resolveStorageFile(
       try {
         const { unlink } = await import("fs/promises");
         await unlink(tempPath);
-      } catch (e) {
-        // Ignore cleanup errors
+      } catch (cleanupError: any) {
+        console.warn(`[QCWorker] Storage temp file cleanup failed for ${tempPath}:`, cleanupError.message);
       }
     },
   };
@@ -1137,7 +1163,9 @@ async function resolveStorageFileWithProgress(
   try {
     const { getProcessingLimits } = await import("@/lib/config/platform");
     maxFileSizeMB = getProcessingLimits().maxFileSizeMB;
-  } catch (e) {}
+  } catch (platformError: any) {
+    console.warn(`[QCWorker] Platform config unavailable for storage progress, using default maxFileSizeMB=${maxFileSizeMB}`);
+  }
   
   if (fileSizeMB > maxFileSizeMB) {
     throw new Error(`File too large (${fileSizeMB.toFixed(1)}MB). Maximum: ${maxFileSizeMB}MB`);
@@ -1161,7 +1189,9 @@ async function resolveStorageFileWithProgress(
     if (!isCloudEnvironment()) {
       tempDir = join(process.cwd(), "tmp", "qc-processing");
     }
-  } catch (e) {}
+  } catch (platformError: any) {
+    console.debug(`[QCWorker] Platform detection unavailable for storage progress, using default tempDir=${tempDir}`);
+  }
   
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });

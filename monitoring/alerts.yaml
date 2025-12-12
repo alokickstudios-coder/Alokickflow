@@ -1,0 +1,209 @@
+# AlokickFlow Alert Rules
+# These can be imported into your monitoring system (DataDog, Grafana, etc.)
+
+alerts:
+  # ============================================
+  # QC JOB ALERTS
+  # ============================================
+  
+  - name: qc_job_stuck
+    description: QC jobs stuck in running state for too long
+    query: |
+      SELECT COUNT(*) 
+      FROM qc_jobs 
+      WHERE status = 'running' 
+        AND updated_at < NOW() - INTERVAL '2 minutes'
+    threshold: 1
+    comparison: ">="
+    severity: critical
+    notification_channels:
+      - slack-oncall
+      - pagerduty
+    runbook_url: /runbooks/qc-stuck-jobs.md
+    
+  - name: qc_job_failure_rate_high
+    description: QC job failure rate exceeds threshold
+    query: |
+      SELECT 
+        (COUNT(*) FILTER (WHERE status = 'failed') * 100.0 / NULLIF(COUNT(*), 0)) as failure_rate
+      FROM qc_jobs 
+      WHERE created_at > NOW() - INTERVAL '15 minutes'
+    threshold: 10
+    comparison: ">="
+    severity: warning
+    notification_channels:
+      - slack-engineering
+    runbook_url: /runbooks/qc-high-failure-rate.md
+    
+  - name: qc_queue_backed_up
+    description: QC queue has too many pending jobs
+    query: |
+      SELECT COUNT(*) 
+      FROM qc_jobs 
+      WHERE status = 'queued'
+    threshold: 50
+    comparison: ">="
+    severity: warning
+    notification_channels:
+      - slack-engineering
+    runbook_url: /runbooks/qc-queue-management.md
+
+  # ============================================
+  # API HEALTH ALERTS
+  # ============================================
+  
+  - name: api_error_rate_high
+    description: API error rate exceeds threshold
+    metric: http_requests_total{status=~"5.."}
+    query_type: prometheus
+    threshold: 5
+    comparison: ">="
+    window: 5m
+    severity: critical
+    notification_channels:
+      - slack-oncall
+      - pagerduty
+
+  - name: api_latency_high
+    description: API p99 latency exceeds threshold
+    metric: http_request_duration_seconds{quantile="0.99"}
+    query_type: prometheus
+    threshold: 5.0
+    comparison: ">="
+    window: 5m
+    severity: warning
+    notification_channels:
+      - slack-engineering
+
+  # ============================================
+  # EXTERNAL SERVICE ALERTS  
+  # ============================================
+  
+  - name: google_drive_auth_failures
+    description: Google Drive authentication failures
+    query: |
+      SELECT COUNT(*)
+      FROM qc_jobs
+      WHERE status = 'failed'
+        AND error_message LIKE '%Google Drive access denied%'
+        AND created_at > NOW() - INTERVAL '15 minutes'
+    threshold: 5
+    comparison: ">="
+    severity: warning
+    notification_channels:
+      - slack-engineering
+    runbook_url: /runbooks/google-oauth-issues.md
+
+  - name: groq_api_failures
+    description: Groq API failures
+    query: |
+      SELECT COUNT(*)
+      FROM qc_jobs
+      WHERE status = 'failed'
+        AND error_message LIKE '%Groq%'
+        AND created_at > NOW() - INTERVAL '15 minutes'
+    threshold: 5
+    comparison: ">="
+    severity: warning
+    notification_channels:
+      - slack-engineering
+
+# ============================================
+# METRICS DEFINITIONS
+# ============================================
+
+metrics:
+  # Job lifecycle metrics
+  - name: qc_job_enqueued_total
+    type: counter
+    description: Total QC jobs enqueued
+    labels: [org_id, source_type]
+
+  - name: qc_job_started_total
+    type: counter
+    description: Total QC jobs started
+    labels: [org_id]
+
+  - name: qc_job_completed_total
+    type: counter
+    description: Total QC jobs completed
+    labels: [org_id, result]
+
+  - name: qc_job_failed_total
+    type: counter
+    description: Total QC jobs failed
+    labels: [org_id, error_type]
+
+  - name: qc_job_duration_seconds
+    type: histogram
+    description: QC job processing duration
+    labels: [org_id]
+    buckets: [30, 60, 120, 300, 600, 1800]
+
+  # Queue metrics
+  - name: qc_queue_length
+    type: gauge
+    description: Number of jobs in queue
+    labels: [status]
+
+  # Heartbeat metrics
+  - name: qc_job_heartbeat_age_seconds
+    type: gauge
+    description: Age of last heartbeat for running jobs
+    labels: [job_id]
+
+  # Error metrics
+  - name: qc_error_total
+    type: counter
+    description: Total errors by type
+    labels: [error_type, stage]
+
+# ============================================
+# DASHBOARD PANELS
+# ============================================
+
+dashboards:
+  - name: QC Overview
+    panels:
+      - title: Jobs by Status
+        type: pie
+        query: |
+          SELECT status, COUNT(*) 
+          FROM qc_jobs 
+          WHERE created_at > NOW() - INTERVAL '24 hours'
+          GROUP BY status
+          
+      - title: Job Completion Rate
+        type: stat
+        query: |
+          SELECT 
+            ROUND(
+              COUNT(*) FILTER (WHERE status = 'completed') * 100.0 / 
+              NULLIF(COUNT(*), 0)
+            , 1) as completion_rate
+          FROM qc_jobs 
+          WHERE created_at > NOW() - INTERVAL '24 hours'
+          
+      - title: Average Job Duration (minutes)
+        type: stat
+        query: |
+          SELECT 
+            ROUND(AVG(
+              EXTRACT(EPOCH FROM (completed_at - started_at)) / 60
+            )::numeric, 1) as avg_duration
+          FROM qc_jobs 
+          WHERE status = 'completed'
+            AND created_at > NOW() - INTERVAL '24 hours'
+            
+      - title: Jobs Over Time
+        type: timeseries
+        query: |
+          SELECT 
+            date_trunc('hour', created_at) as time,
+            COUNT(*) FILTER (WHERE status = 'completed') as completed,
+            COUNT(*) FILTER (WHERE status = 'failed') as failed,
+            COUNT(*) FILTER (WHERE status = 'running') as running
+          FROM qc_jobs
+          WHERE created_at > NOW() - INTERVAL '7 days'
+          GROUP BY 1
+          ORDER BY 1
