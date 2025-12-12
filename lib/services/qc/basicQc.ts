@@ -211,7 +211,8 @@ export async function runBasicQC(
 async function checkAudioMissing(filePath: string): Promise<BasicQCResult['audioMissing']> {
   try {
     const { stdout } = await execAsync(
-      `"${getFFprobe()}" -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${filePath}"`
+      `"${getFFprobe()}" -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${filePath}"`,
+      { timeout: 15000 } // 15 second timeout
     );
 
     if (!stdout.trim() || !stdout.includes('audio')) {
@@ -232,12 +233,15 @@ async function checkAudioMissing(filePath: string): Promise<BasicQCResult['audio
 
 /**
  * Check loudness compliance (EBU R128 standard)
+ * Optimized with timeout and early termination
  */
 async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness']> {
   try {
-    // Use ffmpeg loudnorm filter to get EBU R128 measurements
+    // Use ffmpeg loudnorm filter with timeout (60 seconds max)
+    // Add -t 120 to only analyze first 2 minutes for speed
     const { stdout } = await execAsync(
-      `"${getFFmpeg()}" -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`
+      `"${getFFmpeg()}" -t 120 -i "${filePath}" -af loudnorm=I=-23:TP=-2.0:LRA=7:print_format=json -f null - 2>&1 | grep -A 30 "input_i\\|input_tp\\|input_lra" || echo "{}"`,
+      { timeout: 60000 } // 60 second timeout
     );
 
     // Parse JSON output
@@ -300,12 +304,14 @@ async function checkLoudness(filePath: string): Promise<BasicQCResult['loudness'
 
 /**
  * Detect silence segments
+ * Optimized with timeout
  */
 async function checkSilence(filePath: string): Promise<BasicQCResult['silence']> {
   try {
-    // Use ffmpeg silencedetect filter
+    // Use ffmpeg silencedetect filter with timeout (45 seconds max)
     const { stderr } = await execAsync(
-      `"${getFFmpeg()}" -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`
+      `"${getFFmpeg()}" -t 180 -i "${filePath}" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1`,
+      { timeout: 45000 } // 45 second timeout
     );
 
     const segments: Array<{ start: number; end: number; duration: number }> = [];
@@ -521,9 +527,10 @@ async function checkMissingBGM(
 
   try {
     // Analyze audio spectrum to detect BGM presence
-    // Use ffmpeg to analyze frequency bands
+    // Use ffmpeg to analyze frequency bands (limit to first 60 seconds)
     const { stdout } = await execAsync(
-      `"${getFFmpeg()}" -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -20`
+      `"${getFFmpeg()}" -t 60 -i "${filePath}" -af "astats=metadata=1:reset=1" -f null - 2>&1 | grep -E "RMS level|Peak level" | head -20`,
+      { timeout: 30000 } // 30 second timeout
     );
 
     // Check audio channels (stereo typically has BGM)
@@ -579,7 +586,8 @@ async function checkVisualQuality(filePath: string): Promise<BasicQCResult['visu
 
   try {
     const { stdout } = await execAsync(
-      `"${getFFprobe()}" -v error -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate -of json "${filePath}"`
+      `"${getFFprobe()}" -v error -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate -of json "${filePath}"`,
+      { timeout: 15000 } // 15 second timeout
     );
 
     const data = JSON.parse(stdout);
@@ -654,7 +662,8 @@ async function checkVisualQuality(filePath: string): Promise<BasicQCResult['visu
 async function getMetadata(filePath: string): Promise<BasicQCResult['metadata']> {
   try {
     const { stdout } = await execAsync(
-      `"${getFFprobe()}" -v error -show_entries format=duration -show_entries stream=codec_name,channels,sample_rate -of json "${filePath}"`
+      `"${getFFprobe()}" -v error -show_entries format=duration -show_entries stream=codec_name,channels,sample_rate -of json "${filePath}"`,
+      { timeout: 15000 } // 15 second timeout
     );
 
     const data = JSON.parse(stdout);

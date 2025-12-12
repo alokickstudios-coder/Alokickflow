@@ -194,33 +194,168 @@ export async function processNextQcJob(): Promise<QcJobRow | null> {
 }
 
 /**
- * Process a batch of QC jobs
+ * Process a batch of QC jobs - PARALLEL for speed
  * 
  * @param limit Maximum number of jobs to process
  * @returns Summary of processed jobs
  */
 export async function processBatch(limit: number = 5): Promise<{ processed: number; errors: number }> {
+  const adminClient = getAdminClient();
+  if (!adminClient) {
+    console.error("[QCWorker] Admin client not available");
+    return { processed: 0, errors: 0 };
+  }
+
+  // Fetch multiple queued jobs at once
+  const { data: queuedJobs, error: fetchError } = await adminClient
+    .from("qc_jobs")
+    .select("*")
+    .eq("status", "queued")
+    .order("created_at", { ascending: true })
+    .limit(limit);
+
+  if (fetchError || !queuedJobs || queuedJobs.length === 0) {
+    console.log("[QCWorker] No queued jobs found");
+    return { processed: 0, errors: 0 };
+  }
+
+  console.log(`[QCWorker] Processing ${queuedJobs.length} jobs in parallel`);
+
+  // Mark all as "running" immediately to prevent duplicate processing
+  const jobIds = queuedJobs.map(j => j.id);
+  await adminClient
+    .from("qc_jobs")
+    .update({ 
+      status: "running", 
+      started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .in("id", jobIds);
+
+  // Process jobs in parallel (up to 3 at a time for resource management)
+  const PARALLEL_LIMIT = 3;
   let processed = 0;
   let errors = 0;
 
-  for (let i = 0; i < limit; i++) {
-    try {
-      const job = await processNextQcJob();
-      if (!job) {
-        break; // No more jobs
-      }
-      processed++;
-      if (job.status === "failed") {
+  for (let i = 0; i < queuedJobs.length; i += PARALLEL_LIMIT) {
+    const batch = queuedJobs.slice(i, i + PARALLEL_LIMIT);
+    
+    const results = await Promise.allSettled(
+      batch.map(job => processQcJobDirect(job, adminClient))
+    );
+
+    for (const result of results) {
+      if (result.status === "fulfilled" && result.value) {
+        processed++;
+        if (result.value.status === "failed") {
+          errors++;
+        }
+      } else if (result.status === "rejected") {
+        console.error("[QCWorker] Job failed:", result.reason);
         errors++;
       }
-    } catch (error: any) {
-      console.error(`[QCWorker] Error in batch processing:`, error);
-      errors++;
-      // Continue with next job
     }
   }
 
   return { processed, errors };
+}
+
+/**
+ * Process a single QC job directly (called from parallel batch)
+ */
+async function processQcJobDirect(
+  job: QcJobRow,
+  adminClient: ReturnType<typeof getAdminClient>
+): Promise<{ status: string } | null> {
+  console.log(`[QCWorker] Processing job ${job.id}`);
+  
+  try {
+    // Update progress to 10%
+    await updateJobProgress(job.id, 10, adminClient!);
+
+    // Get enabled features
+    const featuresEnabled = await getEnabledQCFeatures(job.organisation_id);
+
+    // Update progress to 20%
+    await updateJobProgress(job.id, 20, adminClient!);
+
+    // Resolve file
+    const context = await resolveFileContext(job, adminClient);
+    
+    // Update progress to 40%
+    await updateJobProgress(job.id, 40, adminClient!);
+
+    // Run QC
+    const qcResult = await runQcForJob(job, context, featuresEnabled);
+
+    // Update progress to 90%
+    await updateJobProgress(job.id, 90, adminClient!);
+
+    // Save results
+    await adminClient!
+      .from("qc_jobs")
+      .update({
+        status: "completed",
+        result_json: qcResult,
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        progress: 100,
+      })
+      .eq("id", job.id);
+
+    // Update delivery if linked
+    if (job.delivery_id) {
+      await updateDeliveryRecord(job.delivery_id, qcResult, adminClient);
+    }
+
+    // Trigger Creative QC (non-blocking)
+    triggerCreativeQC(job.id, job.organisation_id, qcResult, adminClient).catch(() => {});
+
+    // Cleanup temp files
+    if (context.cleanup) {
+      await context.cleanup();
+    }
+
+    console.log(`[QCWorker] Job ${job.id} completed successfully`);
+    return { status: "completed" };
+
+  } catch (error: any) {
+    console.error(`[QCWorker] Job ${job.id} failed:`, error);
+
+    await adminClient!
+      .from("qc_jobs")
+      .update({
+        status: "failed",
+        error_message: error.message || "Unknown error",
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        progress: 100,
+      })
+      .eq("id", job.id);
+
+    return { status: "failed" };
+  }
+}
+
+/**
+ * Update job progress
+ */
+async function updateJobProgress(
+  jobId: string, 
+  progress: number,
+  adminClient: ReturnType<typeof getAdminClient>
+): Promise<void> {
+  try {
+    await adminClient!
+      .from("qc_jobs")
+      .update({ 
+        progress, 
+        updated_at: new Date().toISOString() 
+      })
+      .eq("id", jobId);
+  } catch (e) {
+    // Ignore progress update errors
+  }
 }
 
 /**
