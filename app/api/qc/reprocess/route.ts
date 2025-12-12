@@ -108,7 +108,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Trigger queue processing
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const { getAppBaseUrl } = await import("@/lib/config/platform");
+    const baseUrl = getAppBaseUrl();
     fetch(`${baseUrl}/api/qc/process-queue`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },

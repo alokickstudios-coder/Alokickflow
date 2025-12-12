@@ -49,7 +49,8 @@ export async function GET(request: NextRequest) {
     // If there are queued jobs, trigger processing (non-blocking)
     const queuedCount = enrichedJobs.filter((j: any) => j.status === "queued" || j.status === "pending").length;
     if (queuedCount > 0) {
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+      const { getAppBaseUrl } = await import("@/lib/config/platform");
+      const baseUrl = getAppBaseUrl();
       fetch(`${baseUrl}/api/qc/process-queue`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-internal-trigger": "true" },

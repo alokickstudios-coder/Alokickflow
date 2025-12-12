@@ -8,20 +8,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { getPlatformConfig } from "@/lib/config/platform";
 
 export const dynamic = "force-dynamic";
 
 const execAsync = promisify(exec);
 
 export async function GET(request: NextRequest) {
+  // Get platform-agnostic configuration
+  const platformConfig = getPlatformConfig();
+  
   const diagnostics: Record<string, any> = {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
     platform: {
-      isRender: !!process.env.RENDER,
-      isVercel: !!process.env.VERCEL,
-      isRailway: !!process.env.RAILWAY_ENVIRONMENT,
+      name: platformConfig.platform.name,
+      isCloud: platformConfig.platform.isCloud,
+      isServerless: platformConfig.platform.isServerless,
+      maxMemoryMB: platformConfig.platform.maxMemoryMB,
+      appUrl: platformConfig.appUrl,
     },
+    features: platformConfig.features,
     ffmpeg: {
       available: false,
       version: null,

@@ -1,12 +1,11 @@
 /**
- * QC Worker - Environment-Agnostic Job Processing
+ * QC Worker - Platform-Agnostic Job Processing
  * 
- * This module contains the core worker logic that can run in:
- * - Local dev (via API route)
- * - Vercel (via API route + cron)
- * - Dedicated server (via standalone script)
+ * This module contains the core worker logic that can run on ANY platform:
+ * - Render, Vercel, Railway, Heroku, AWS, GCP, self-hosted
  * 
- * NO environment-specific logic here - pure business logic.
+ * Uses centralized platform config for environment detection.
+ * Optimized for memory efficiency on constrained environments.
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -14,6 +13,47 @@ import { runQcForJob, QcJobContext } from "./engine";
 import { getEnabledQCFeatures } from "./engine";
 import { logQCEvent } from "@/lib/utils/qc-logger";
 import { decrypt } from "@/lib/utils/crypto";
+
+/**
+ * Clean up old temp files to prevent disk/memory buildup
+ * Runs at the start of each batch to keep temp directory clean
+ */
+async function cleanupOldTempFiles(): Promise<void> {
+  try {
+    const { readdir, stat, unlink } = await import("fs/promises");
+    const { join } = await import("path");
+    const { existsSync } = await import("fs");
+
+    const tempDir = "/tmp/qc-processing";
+    if (!existsSync(tempDir)) return;
+
+    const files = await readdir(tempDir);
+    const now = Date.now();
+    const MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+
+    let cleaned = 0;
+    for (const file of files) {
+      try {
+        const filePath = join(tempDir, file);
+        const fileStat = await stat(filePath);
+        const age = now - fileStat.mtimeMs;
+        
+        if (age > MAX_AGE_MS) {
+          await unlink(filePath);
+          cleaned++;
+        }
+      } catch (e) {
+        // Ignore individual file errors
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`[QCWorker] Cleaned up ${cleaned} old temp files`);
+    }
+  } catch (e) {
+    // Ignore cleanup errors
+  }
+}
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -194,66 +234,94 @@ export async function processNextQcJob(): Promise<QcJobRow | null> {
 }
 
 /**
- * Process a batch of QC jobs - PARALLEL for speed
+ * Process a batch of QC jobs - SEQUENTIAL to prevent memory overflow
+ * 
+ * Memory-optimized: Process one job at a time to keep memory usage low
  * 
  * @param limit Maximum number of jobs to process
  * @returns Summary of processed jobs
  */
 export async function processBatch(limit: number = 5): Promise<{ processed: number; errors: number }> {
+  // Clean up old temp files to prevent disk/memory buildup
+  await cleanupOldTempFiles();
+
   const adminClient = getAdminClient();
   if (!adminClient) {
     console.error("[QCWorker] Admin client not available");
     return { processed: 0, errors: 0 };
   }
 
-  // Fetch multiple queued jobs at once
+  // Get platform-specific limits
+  let maxConcurrent = 1; // Default to 1 for memory safety
+  try {
+    const { getProcessingLimits } = await import("@/lib/config/platform");
+    const limits = getProcessingLimits();
+    maxConcurrent = limits.maxConcurrentJobs;
+  } catch (e) {
+    // Use default
+  }
+
+  // Cap at provided limit
+  const effectiveLimit = Math.min(limit, maxConcurrent);
+
+  // Fetch queued jobs
   const { data: queuedJobs, error: fetchError } = await adminClient
     .from("qc_jobs")
     .select("*")
     .eq("status", "queued")
     .order("created_at", { ascending: true })
-    .limit(limit);
+    .limit(effectiveLimit);
 
   if (fetchError || !queuedJobs || queuedJobs.length === 0) {
     console.log("[QCWorker] No queued jobs found");
     return { processed: 0, errors: 0 };
   }
 
-  console.log(`[QCWorker] Processing ${queuedJobs.length} jobs in parallel`);
+  console.log(`[QCWorker] Processing ${queuedJobs.length} jobs (max concurrent: ${maxConcurrent})`);
 
-  // Mark all as "running" immediately to prevent duplicate processing
-  const jobIds = queuedJobs.map(j => j.id);
-  await adminClient
-    .from("qc_jobs")
-    .update({ 
-      status: "running", 
-      started_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .in("id", jobIds);
-
-  // Process jobs in parallel (up to 3 at a time for resource management)
-  const PARALLEL_LIMIT = 3;
   let processed = 0;
   let errors = 0;
 
-  for (let i = 0; i < queuedJobs.length; i += PARALLEL_LIMIT) {
-    const batch = queuedJobs.slice(i, i + PARALLEL_LIMIT);
-    
-    const results = await Promise.allSettled(
-      batch.map(job => processQcJobDirect(job, adminClient))
-    );
+  // Process jobs ONE AT A TIME to prevent memory overflow
+  // This is crucial for Render's 512MB free tier
+  for (const job of queuedJobs) {
+    try {
+      // Mark as running
+      await adminClient
+        .from("qc_jobs")
+        .update({ 
+          status: "running", 
+          started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
 
-    for (const result of results) {
-      if (result.status === "fulfilled" && result.value) {
-        processed++;
-        if (result.value.status === "failed") {
-          errors++;
-        }
-      } else if (result.status === "rejected") {
-        console.error("[QCWorker] Job failed:", result.reason);
+      // Process the job
+      const result = await processQcJobDirect(job, adminClient);
+      processed++;
+      
+      if (result?.status === "failed") {
         errors++;
       }
+
+      // Force garbage collection hint between jobs
+      if (global.gc) {
+        global.gc();
+      }
+
+    } catch (error: any) {
+      console.error(`[QCWorker] Job ${job.id} failed:`, error.message);
+      errors++;
+      
+      // Mark as failed
+      await adminClient
+        .from("qc_jobs")
+        .update({
+          status: "failed",
+          error_message: error.message || "Processing failed",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
     }
   }
 
@@ -607,43 +675,101 @@ async function resolveDriveFile(
   
   console.log(`[QCWorker] Using access token (length: ${accessToken.length})`);
 
-  // Download file from Drive
+  // Get file metadata first to check size
+  const metadataUrl = `https://www.googleapis.com/drive/v3/files/${driveFileId}?fields=name,size,mimeType`;
+  const metaResponse = await fetch(metadataUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  
+  if (!metaResponse.ok) {
+    throw new Error(`Failed to get file metadata: ${metaResponse.statusText}`);
+  }
+  
+  const metadata = await metaResponse.json();
+  const fileSizeMB = parseInt(metadata.size || "0") / (1024 * 1024);
+  
+  // Get platform limits
+  let maxFileSizeMB = 100; // Default 100MB
+  try {
+    const { getProcessingLimits } = await import("@/lib/config/platform");
+    maxFileSizeMB = getProcessingLimits().maxFileSizeMB;
+  } catch (e) {}
+  
+  if (fileSizeMB > maxFileSizeMB) {
+    throw new Error(`File too large (${fileSizeMB.toFixed(1)}MB). Maximum allowed: ${maxFileSizeMB}MB. Please use a smaller file or upgrade your plan.`);
+  }
+  
+  console.log(`[QCWorker] Downloading ${metadata.name} (${fileSizeMB.toFixed(1)}MB)`);
+
+  // Download file using streaming to reduce memory usage
   const downloadUrl = `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`;
   const response = await fetch(downloadUrl, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
+    headers: { Authorization: `Bearer ${accessToken}` },
   });
 
   if (!response.ok) {
     throw new Error(`Failed to download from Google Drive: ${response.statusText}`);
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-
-  // Save to temp location (use /tmp on Vercel, local tmp otherwise)
-  const { writeFile, mkdir } = await import("fs/promises");
+  // Setup temp directory
+  const { mkdir } = await import("fs/promises");
+  const { createWriteStream } = await import("fs");
   const { join } = await import("path");
   const { existsSync } = await import("fs");
+  const { Readable } = await import("stream");
+  const { pipeline } = await import("stream/promises");
 
-  // On serverless/cloud (Vercel, Render), use /tmp which is writable; locally use project tmp
-  const isCloud = !!process.env.VERCEL || !!process.env.RENDER || !!process.env.RAILWAY_ENVIRONMENT;
-  const tempDir = isCloud ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
+  // Use platform-agnostic temp directory
+  let tempDir = "/tmp/qc-processing";
+  try {
+    const { isCloudEnvironment } = await import("@/lib/config/platform");
+    if (!isCloudEnvironment()) {
+      tempDir = join(process.cwd(), "tmp", "qc-processing");
+    }
+  } catch (e) {}
+  
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
   }
 
-  const tempPath = join(tempDir, `${Date.now()}-${driveFileId}`);
-  await writeFile(tempPath, buffer);
+  const fileName = metadata.name || driveFileId;
+  const tempPath = join(tempDir, `${Date.now()}-${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}`);
+  
+  // Stream download to file (memory efficient)
+  const fileStream = createWriteStream(tempPath);
+  
+  // Convert fetch response to Node.js readable stream
+  if (response.body) {
+    const reader = response.body.getReader();
+    const nodeStream = new Readable({
+      async read() {
+        const { done, value } = await reader.read();
+        if (done) {
+          this.push(null);
+        } else {
+          this.push(Buffer.from(value));
+        }
+      }
+    });
+    
+    await pipeline(nodeStream, fileStream);
+  } else {
+    // Fallback for environments without ReadableStream
+    const arrayBuffer = await response.arrayBuffer();
+    const { writeFile } = await import("fs/promises");
+    await writeFile(tempPath, Buffer.from(arrayBuffer));
+  }
+
+  console.log(`[QCWorker] Downloaded to ${tempPath}`);
 
   return {
     filePath: tempPath,
-    fileName: driveFileId,
+    fileName,
     cleanup: async () => {
       try {
         const { unlink } = await import("fs/promises");
         await unlink(tempPath);
+        console.log(`[QCWorker] Cleaned up temp file: ${tempPath}`);
       } catch (e) {
         // Ignore cleanup errors
       }
@@ -667,23 +793,40 @@ async function resolveStorageFile(
     throw new Error(`Failed to download from storage: ${error?.message || "Unknown error"}`);
   }
 
+  // Check file size
+  const fileSizeMB = data.size / (1024 * 1024);
+  let maxFileSizeMB = 100;
+  try {
+    const { getProcessingLimits } = await import("@/lib/config/platform");
+    maxFileSizeMB = getProcessingLimits().maxFileSizeMB;
+  } catch (e) {}
+  
+  if (fileSizeMB > maxFileSizeMB) {
+    throw new Error(`File too large (${fileSizeMB.toFixed(1)}MB). Maximum: ${maxFileSizeMB}MB`);
+  }
+
   const arrayBuffer = await data.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
-  // Save to temp location (use /tmp on Vercel, local tmp otherwise)
+  // Save to temp location using platform-agnostic config
   const { writeFile, mkdir } = await import("fs/promises");
   const { join } = await import("path");
   const { existsSync } = await import("fs");
 
-  // On serverless/cloud (Vercel, Render), use /tmp which is writable; locally use project tmp
-  const isCloud = !!process.env.VERCEL || !!process.env.RENDER || !!process.env.RAILWAY_ENVIRONMENT;
-  const tempDir = isCloud ? "/tmp/qc-processing" : join(process.cwd(), "tmp", "qc-processing");
+  let tempDir = "/tmp/qc-processing";
+  try {
+    const { isCloudEnvironment } = await import("@/lib/config/platform");
+    if (!isCloudEnvironment()) {
+      tempDir = join(process.cwd(), "tmp", "qc-processing");
+    }
+  } catch (e) {}
+  
   if (!existsSync(tempDir)) {
     await mkdir(tempDir, { recursive: true });
   }
 
   const fileName = storagePath.split("/").pop() || "file";
-  const tempPath = join(tempDir, `${Date.now()}-${fileName}`);
+  const tempPath = join(tempDir, `${Date.now()}-${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}`);
   await writeFile(tempPath, buffer);
 
   return {

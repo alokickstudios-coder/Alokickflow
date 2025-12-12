@@ -752,10 +752,22 @@ async function runBasicQCViaWorker(fileInfo: FileInfo): Promise<BasicQCResult> {
  * This allows QC to "complete" without full analysis
  */
 function createMinimalQCResult(): BasicQCResult {
-  const isCloud = !!process.env.VERCEL || !!process.env.RENDER || !!process.env.RAILWAY_ENVIRONMENT;
-  const skipMessage = isCloud 
-    ? 'FFmpeg not available in serverless environment. Full video analysis requires QC Worker to be configured.'
-    : 'FFmpeg not found. Please install FFmpeg for full video analysis.';
+  // Use platform-agnostic detection
+  let isCloud = false;
+  let skipMessage = 'FFmpeg not found. Please install FFmpeg for full video analysis.';
+  
+  try {
+    const { isCloudEnvironment, hasFFmpegSupport } = require("@/lib/config/platform");
+    isCloud = isCloudEnvironment();
+    if (isCloud && !hasFFmpegSupport()) {
+      skipMessage = 'FFmpeg not available in this environment. Configure QC Worker for video processing.';
+    }
+  } catch {
+    isCloud = !!(process.env.VERCEL || process.env.RENDER || process.env.RAILWAY_ENVIRONMENT);
+    skipMessage = isCloud 
+      ? 'FFmpeg not available in cloud environment. Full video analysis requires QC Worker.'
+      : 'FFmpeg not found. Please install FFmpeg for full video analysis.';
+  }
 
   return {
     audioMissing: {

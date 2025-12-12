@@ -72,7 +72,8 @@ export async function POST(request: Request) {
     }
 
     // Send email invitation (non-blocking)
-    const inviteLink = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/invite/${token}`;
+    const { getAppBaseUrl } = await import("@/lib/config/platform");
+    const inviteLink = `${getAppBaseUrl()}/invite/${token}`;
     
     try {
       const { emailService } = await import("@/lib/email/service");

@@ -510,38 +510,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Trigger worker processing IMMEDIATELY (blocking to ensure it starts)
-    // This ensures jobs start processing right away
+    // Trigger worker processing (non-blocking to avoid memory issues)
+    // Jobs will be picked up immediately or by polling
     try {
-      // Build the correct base URL for the current environment
-      const baseUrl = process.env.RENDER_EXTERNAL_URL || // Render.com
-                     process.env.NEXT_PUBLIC_APP_URL ||  // Manual config
-                     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) || // Vercel
-                     'http://localhost:3000';
+      const { getAppBaseUrl, getProcessingLimits } = await import("@/lib/config/platform");
+      const baseUrl = getAppBaseUrl();
+      const limits = getProcessingLimits();
       
       console.log(`[QCStart] Triggering worker at ${baseUrl}/api/qc/process-queue`);
       
-      // Use await to ensure worker actually starts before returning
-      const workerResponse = await fetch(`${baseUrl}/api/qc/process-queue`, {
+      // Non-blocking fetch - don't wait for worker to complete
+      // This prevents memory buildup from long-running requests
+      fetch(`${baseUrl}/api/qc/process-queue`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
           "x-internal-trigger": "true",
         },
-        body: JSON.stringify({ limit: 10 }), // Process more jobs at once
-        signal: AbortSignal.timeout(55000), // 55 second timeout (within 60s limit)
+        body: JSON.stringify({ limit: limits.maxConcurrentJobs }),
+      }).then(res => {
+        if (res.ok) {
+          console.log(`[QCStart] Worker triggered successfully`);
+        } else {
+          console.warn(`[QCStart] Worker returned ${res.status}`);
+        }
+      }).catch(err => {
+        console.log("[QCStart] Worker trigger failed (will retry):", err.message);
       });
-      
-      if (workerResponse.ok) {
-        const workerResult = await workerResponse.json();
-        console.log(`[QCStart] Worker response:`, workerResult);
-      } else {
-        console.warn(`[QCStart] Worker returned ${workerResponse.status}`);
-      }
     } catch (err: any) {
-      // If worker call times out or fails, that's OK - jobs are queued
-      // They'll be picked up by next trigger
-      console.log("[QCStart] Worker trigger error (jobs still queued):", err.message);
+      console.log("[QCStart] Worker trigger error:", err.message);
     }
 
     // Always return jobs array (even if empty) and errors array (even if empty)
