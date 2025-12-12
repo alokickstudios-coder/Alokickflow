@@ -979,11 +979,8 @@ async function resolveDriveFile(
 
   // Setup temp directory
   const { mkdir } = await import("fs/promises");
-  const { createWriteStream } = await import("fs");
   const { join } = await import("path");
   const { existsSync } = await import("fs");
-  const { Readable } = await import("stream");
-  const { pipeline } = await import("stream/promises");
 
   // Use platform-agnostic temp directory
   let tempDir = "/tmp/qc-processing";
@@ -1004,29 +1001,18 @@ async function resolveDriveFile(
   const fileName = metadata.name || driveFileId;
   const tempPath = join(tempDir, `${Date.now()}-${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}`);
   
-  // Stream download to file (memory efficient)
-  const fileStream = createWriteStream(tempPath);
+  // Download file - use simple arrayBuffer approach for compatibility
+  // The streaming approach caused "p is not a constructor" errors in some environments
+  console.log(`[QCWorker] Downloading file to ${tempPath}...`);
   
-  // Convert fetch response to Node.js readable stream
-  if (response.body) {
-    const reader = response.body.getReader();
-    const nodeStream = new Readable({
-      async read() {
-        const { done, value } = await reader.read();
-        if (done) {
-          this.push(null);
-        } else {
-          this.push(Buffer.from(value));
-        }
-      }
-    });
-    
-    await pipeline(nodeStream, fileStream);
-  } else {
-    // Fallback for environments without ReadableStream
+  try {
     const arrayBuffer = await response.arrayBuffer();
     const { writeFile } = await import("fs/promises");
     await writeFile(tempPath, Buffer.from(arrayBuffer));
+    console.log(`[QCWorker] File written successfully (${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+  } catch (writeError: any) {
+    console.error(`[QCWorker] Failed to write file:`, writeError.message);
+    throw new Error(`Failed to save downloaded file: ${writeError.message}`);
   }
 
   console.log(`[QCWorker] Downloaded to ${tempPath}`);
