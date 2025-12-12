@@ -137,7 +137,7 @@ export default function DeliveriesPage() {
       (deliveriesData || []).forEach((d) => {
         deliveriesMap.set(d.id, {
           ...d,
-          progress: d.status === "qc_passed" || d.status === "qc_failed" ? 100 : 50,
+          progress: d.status === "qc_passed" || d.status === "qc_failed" ? 100 : (d.progress || 0),
         });
       });
 
@@ -150,9 +150,10 @@ export default function DeliveriesPage() {
             drive_file_id: job.drive_file_id || existing.drive_file_id,
             score: job.result?.summary?.score,
             qc_report: job.result,
-            progress: job.status === "completed" || job.status === "failed" ? 100 :
-                      job.status === "running" ? Math.min(95, job.progress || 50) :
-                      job.status === "queued" ? 10 : existing.progress,
+            progress: job.progress !== undefined && job.progress !== null 
+              ? job.progress 
+              : (job.status === "completed" || job.status === "failed" ? 100 : 
+                 job.status === "queued" ? 0 : existing.progress || 5),
           });
         }
       });

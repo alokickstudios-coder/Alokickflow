@@ -98,9 +98,11 @@ export async function GET(request: NextRequest) {
         qc_errors: job.result?.errors || existing.qc_errors || [],
         created_at: job.created_at,
         updated_at: job.updated_at,
-        progress: job.status === "completed" || job.status === "failed" ? 100 :
-                  job.status === "running" ? Math.min(95, job.progress || 50) :
-                  job.status === "queued" ? 10 : 0,
+        progress: job.progress !== undefined && job.progress !== null 
+          ? job.progress 
+          : (job.status === "completed" || job.status === "failed" ? 100 :
+             job.status === "queued" || job.status === "pending" ? 0 : 
+             job.status === "running" ? 5 : 0),
         score: job.result?.summary?.score,
         project_id: job.project_id || existing.project_id,
       });

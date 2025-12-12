@@ -177,7 +177,7 @@ export default function DashboardPage() {
       // Build recent files
       const filesMap = new Map<string, RecentFile>();
       deliveries.forEach((d) => {
-        filesMap.set(d.id, { ...d, progress: d.status === "qc_passed" || d.status === "qc_failed" ? 100 : 50 });
+        filesMap.set(d.id, { ...d, progress: d.status === "qc_passed" || d.status === "qc_failed" ? 100 : (d.progress || 0) });
       });
 
       qcJobs.forEach((job) => {
@@ -192,7 +192,7 @@ export default function DashboardPage() {
           drive_file_id: job.drive_file_id,
           qc_report: job.result,
           created_at: job.created_at,
-          progress: job.status === "completed" || job.status === "failed" ? 100 : job.status === "running" ? Math.min(95, job.progress || 50) : job.status === "queued" ? 10 : 0,
+          progress: job.progress !== undefined && job.progress !== null ? job.progress : (job.status === "completed" || job.status === "failed" ? 100 : job.status === "queued" ? 0 : 5),
           score: job.result?.summary?.score,
           project_id: job.project_id || (existing as any).project_id,
         });

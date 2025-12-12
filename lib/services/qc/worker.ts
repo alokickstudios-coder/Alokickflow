@@ -242,6 +242,8 @@ export async function processNextQcJob(): Promise<QcJobRow | null> {
  * @returns Summary of processed jobs
  */
 export async function processBatch(limit: number = 5): Promise<{ processed: number; errors: number }> {
+  console.log(`[QCWorker] ====== BATCH START ======`);
+  
   // Clean up old temp files to prevent disk/memory buildup
   await cleanupOldTempFiles();
 
@@ -257,8 +259,38 @@ export async function processBatch(limit: number = 5): Promise<{ processed: numb
     const { getProcessingLimits } = await import("@/lib/config/platform");
     const limits = getProcessingLimits();
     maxConcurrent = limits.maxConcurrentJobs;
+    console.log(`[QCWorker] Platform limits: maxConcurrent=${maxConcurrent}`);
   } catch (e) {
-    // Use default
+    console.log(`[QCWorker] Using default limits: maxConcurrent=1`);
+  }
+
+  // AUTO-RECOVERY: Reset jobs stuck in "running" for > 5 minutes
+  try {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: stuckJobs, error: stuckError } = await adminClient
+      .from("qc_jobs")
+      .select("id, file_name, started_at")
+      .eq("status", "running")
+      .lt("started_at", fiveMinutesAgo);
+
+    if (!stuckError && stuckJobs && stuckJobs.length > 0) {
+      console.log(`[QCWorker] Found ${stuckJobs.length} stuck job(s), resetting...`);
+      for (const stuck of stuckJobs) {
+        console.log(`[QCWorker] Resetting stuck job: ${stuck.id} (${stuck.file_name})`);
+        await adminClient
+          .from("qc_jobs")
+          .update({
+            status: "queued",
+            progress: 0,
+            error_message: "Auto-reset: job was stuck",
+            started_at: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", stuck.id);
+      }
+    }
+  } catch (stuckCheckError) {
+    console.warn("[QCWorker] Stuck job check failed:", stuckCheckError);
   }
 
   // Cap at provided limit
@@ -272,12 +304,21 @@ export async function processBatch(limit: number = 5): Promise<{ processed: numb
     .order("created_at", { ascending: true })
     .limit(effectiveLimit);
 
-  if (fetchError || !queuedJobs || queuedJobs.length === 0) {
+  if (fetchError) {
+    console.error("[QCWorker] Failed to fetch jobs:", fetchError.message);
+    return { processed: 0, errors: 0 };
+  }
+  
+  if (!queuedJobs || queuedJobs.length === 0) {
     console.log("[QCWorker] No queued jobs found");
+    console.log(`[QCWorker] ====== BATCH END (no work) ======`);
     return { processed: 0, errors: 0 };
   }
 
-  console.log(`[QCWorker] Processing ${queuedJobs.length} jobs (max concurrent: ${maxConcurrent})`);
+  console.log(`[QCWorker] Found ${queuedJobs.length} queued job(s) to process`);
+  for (const j of queuedJobs) {
+    console.log(`[QCWorker]   - ${j.id}: ${j.file_name || "unnamed"} (${j.source_type})`);
+  }
 
   let processed = 0;
   let errors = 0;
@@ -320,11 +361,13 @@ export async function processBatch(limit: number = 5): Promise<{ processed: numb
           status: "failed",
           error_message: error.message || "Processing failed",
           completed_at: new Date().toISOString(),
+          progress: 100,
         })
         .eq("id", job.id);
     }
   }
 
+  console.log(`[QCWorker] ====== BATCH END: ${processed} processed, ${errors} errors ======`);
   return { processed, errors };
 }
 
@@ -356,87 +399,90 @@ async function processQcJobDirect(
   job: QcJobRow,
   adminClient: ReturnType<typeof getAdminClient>
 ): Promise<{ status: string } | null> {
-  console.log(`[QCWorker] Processing job ${job.id}: ${job.file_name}`);
+  const jobId = job.id;
+  const fileName = job.file_name || "unknown";
+  console.log(`[QCWorker] ========== START JOB ${jobId} ==========`);
+  console.log(`[QCWorker] File: ${fileName}, Source: ${job.source_type}`);
   const startTime = Date.now();
-  
-  // Progress callback for real-time updates
-  const updateProgress = async (percent: number, stage?: string) => {
-    try {
-      await adminClient!
-        .from("qc_jobs")
-        .update({ 
-          progress: percent, 
-          updated_at: new Date().toISOString(),
-          ...(stage && { processing_stage: stage })
-        })
-        .eq("id", job.id);
-      console.log(`[QCWorker] Job ${job.id}: ${percent}%${stage ? ` (${stage})` : ""}`);
-    } catch (e) {
-      // Ignore progress update errors
-    }
-  };
 
   try {
     // Check if already cancelled before starting
-    if (await isJobCancelled(job.id, adminClient)) {
-      console.log(`[QCWorker] Job ${job.id} was cancelled before processing`);
+    if (await isJobCancelled(jobId, adminClient)) {
+      console.log(`[QCWorker] Job ${jobId} was cancelled before processing`);
       return { status: "cancelled" };
     }
 
     // Stage 1: Initialize (5%)
-    await updateProgress(5, "initializing");
+    await updateJobProgress(jobId, 5, adminClient, "initializing");
 
     // Get enabled features
+    console.log(`[QCWorker] Loading features for org ${job.organisation_id}`);
     const featuresEnabled = await getEnabledQCFeatures(job.organisation_id);
-    await updateProgress(8, "features_loaded");
+    console.log(`[QCWorker] Features: lipSync=${featuresEnabled.lipSyncQC}, bgm=${featuresEnabled.bgmQC}`);
+    await updateJobProgress(jobId, 10, adminClient, "features_loaded");
 
     // Check cancellation
-    if (await isJobCancelled(job.id, adminClient)) {
-      console.log(`[QCWorker] Job ${job.id} cancelled during feature check`);
+    if (await isJobCancelled(jobId, adminClient)) {
+      console.log(`[QCWorker] Job ${jobId} cancelled during feature check`);
       return { status: "cancelled" };
     }
 
-    // Stage 2: File Resolution (10-35%)
-    await updateProgress(10, "downloading");
+    // Stage 2: File Resolution (15-40%)
+    await updateJobProgress(jobId, 15, adminClient, "downloading");
+    console.log(`[QCWorker] Downloading file from ${job.source_type}: ${job.source_path}`);
     
-    // Resolve file with progress callback
-    const context = await resolveFileContextWithProgress(job, adminClient, async (downloadPercent) => {
-      // Map download progress (0-100) to our range (10-35%)
-      const mappedProgress = 10 + Math.floor(downloadPercent * 0.25);
-      await updateProgress(mappedProgress, "downloading");
-    });
-    
-    await updateProgress(35, "download_complete");
+    // Resolve file with inline progress updates
+    let context: QcJobContext;
+    try {
+      await updateJobProgress(jobId, 20, adminClient, "downloading");
+      context = await resolveFileContext(job, adminClient);
+      console.log(`[QCWorker] Downloaded to: ${context.filePath}`);
+      await updateJobProgress(jobId, 40, adminClient, "download_complete");
+    } catch (downloadError: any) {
+      console.error(`[QCWorker] Download failed for ${jobId}:`, downloadError.message);
+      throw new Error(`File download failed: ${downloadError.message}`);
+    }
 
     // Check cancellation after file download
-    if (await isJobCancelled(job.id, adminClient)) {
-      console.log(`[QCWorker] Job ${job.id} cancelled after download`);
+    if (await isJobCancelled(jobId, adminClient)) {
+      console.log(`[QCWorker] Job ${jobId} cancelled after download`);
       if (context.cleanup) await context.cleanup();
       return { status: "cancelled" };
     }
 
-    // Stage 3: Basic QC Analysis (40-75%)
-    await updateProgress(40, "analyzing");
+    // Stage 3: Basic QC Analysis (45-75%)
+    await updateJobProgress(jobId, 45, adminClient, "analyzing");
+    console.log(`[QCWorker] Running QC analysis on ${context.filePath}`);
     
-    // Run QC with progress callback
-    const qcResult = await runQcForJobWithProgress(job, context, featuresEnabled, async (qcPercent, qcStage) => {
-      // Map QC progress (0-100) to our range (40-75%)
-      const mappedProgress = 40 + Math.floor(qcPercent * 0.35);
-      await updateProgress(mappedProgress, qcStage || "analyzing");
-    });
+    let qcResult: any;
+    try {
+      // Run QC with progress updates
+      qcResult = await runQcForJob(job, context, featuresEnabled, async (percent, stage) => {
+        const mappedProgress = 45 + Math.floor(percent * 0.30);
+        await updateJobProgress(jobId, mappedProgress, adminClient, stage);
+      });
+      console.log(`[QCWorker] QC completed: status=${qcResult.status}, score=${qcResult.score}`);
+    } catch (qcError: any) {
+      console.error(`[QCWorker] QC analysis failed for ${jobId}:`, qcError.message);
+      if (context.cleanup) await context.cleanup();
+      throw new Error(`QC analysis failed: ${qcError.message}`);
+    }
+
+    await updateJobProgress(jobId, 75, adminClient, "analysis_complete");
 
     // Check cancellation before saving
-    if (await isJobCancelled(job.id, adminClient)) {
-      console.log(`[QCWorker] Job ${job.id} cancelled after QC processing`);
+    if (await isJobCancelled(jobId, adminClient)) {
+      console.log(`[QCWorker] Job ${jobId} cancelled after QC processing`);
       if (context.cleanup) await context.cleanup();
       return { status: "cancelled" };
     }
 
     // Stage 4: Saving Results (80%)
-    await updateProgress(80, "saving_results");
+    await updateJobProgress(jobId, 80, adminClient, "saving_results");
+    console.log(`[QCWorker] Saving results for ${jobId}`);
 
     // Save results
-    await adminClient!
+    const { error: saveError } = await adminClient!
       .from("qc_jobs")
       .update({
         status: "completed",
@@ -444,49 +490,68 @@ async function processQcJobDirect(
         completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         progress: 85,
-        processing_stage: "results_saved",
       })
-      .eq("id", job.id);
+      .eq("id", jobId);
+
+    if (saveError) {
+      console.error(`[QCWorker] Failed to save results for ${jobId}:`, saveError.message);
+      throw new Error(`Failed to save results: ${saveError.message}`);
+    }
 
     // Update delivery if linked
     if (job.delivery_id) {
-      await updateProgress(88, "updating_delivery");
-      await updateDeliveryRecord(job.delivery_id, qcResult, adminClient);
+      await updateJobProgress(jobId, 88, adminClient, "updating_delivery");
+      try {
+        await updateDeliveryRecord(job.delivery_id, qcResult, adminClient);
+        console.log(`[QCWorker] Updated delivery ${job.delivery_id}`);
+      } catch (deliveryError: any) {
+        console.warn(`[QCWorker] Delivery update failed (non-fatal):`, deliveryError.message);
+      }
     }
 
-    // Stage 5: Creative QC (90-95%) - non-blocking
-    await updateProgress(90, "creative_qc");
-    triggerCreativeQC(job.id, job.organisation_id, qcResult, adminClient).catch(() => {});
+    // Stage 5: Creative QC (90%) - non-blocking
+    await updateJobProgress(jobId, 90, adminClient, "creative_qc");
+    triggerCreativeQC(jobId, job.organisation_id, qcResult, adminClient).catch((err) => {
+      console.warn(`[QCWorker] Creative QC trigger failed (non-fatal):`, err.message);
+    });
 
-    // Stage 6: Cleanup (95-100%)
-    await updateProgress(95, "cleanup");
+    // Stage 6: Cleanup (95%)
+    await updateJobProgress(jobId, 95, adminClient, "cleanup");
     if (context.cleanup) {
-      await context.cleanup();
+      try {
+        await context.cleanup();
+        console.log(`[QCWorker] Cleaned up temp files for ${jobId}`);
+      } catch (cleanupError: any) {
+        console.warn(`[QCWorker] Cleanup failed (non-fatal):`, cleanupError.message);
+      }
     }
 
-    // Complete
+    // Complete - mark 100%
     await adminClient!
       .from("qc_jobs")
       .update({
         progress: 100,
-        processing_stage: "complete",
         updated_at: new Date().toISOString(),
       })
-      .eq("id", job.id);
+      .eq("id", jobId);
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[QCWorker] Job ${job.id} completed in ${duration}s`);
+    console.log(`[QCWorker] ========== COMPLETE JOB ${jobId} in ${duration}s ==========`);
     return { status: "completed" };
 
   } catch (error: any) {
-    console.error(`[QCWorker] Job ${job.id} failed:`, error);
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.error(`[QCWorker] ========== FAILED JOB ${jobId} after ${duration}s ==========`);
+    console.error(`[QCWorker] Error:`, error.message);
+    console.error(`[QCWorker] Stack:`, error.stack?.split("\n").slice(0, 5).join("\n"));
 
     // Check if job was cancelled during processing (don't mark as failed)
-    if (await isJobCancelled(job.id, adminClient)) {
-      console.log(`[QCWorker] Job ${job.id} was cancelled during processing`);
+    if (await isJobCancelled(jobId, adminClient)) {
+      console.log(`[QCWorker] Job ${jobId} was cancelled during processing`);
       return { status: "cancelled" };
     }
 
+    // Mark as failed with detailed error
     await adminClient!
       .from("qc_jobs")
       .update({
@@ -496,30 +561,39 @@ async function processQcJobDirect(
         updated_at: new Date().toISOString(),
         progress: 100,
       })
-      .eq("id", job.id);
+      .eq("id", jobId);
 
     return { status: "failed" };
   }
 }
 
 /**
- * Update job progress
+ * Update job progress - robust version with error logging
  */
 async function updateJobProgress(
   jobId: string, 
   progress: number,
-  adminClient: ReturnType<typeof getAdminClient>
+  adminClient: ReturnType<typeof getAdminClient>,
+  stage?: string
 ): Promise<void> {
   try {
-    await adminClient!
+    const updateData: any = { 
+      progress, 
+      updated_at: new Date().toISOString() 
+    };
+    
+    const { error } = await adminClient!
       .from("qc_jobs")
-      .update({ 
-        progress, 
-        updated_at: new Date().toISOString() 
-      })
+      .update(updateData)
       .eq("id", jobId);
-  } catch (e) {
-    // Ignore progress update errors
+    
+    if (error) {
+      console.warn(`[QCWorker] Progress update error for ${jobId}:`, error.message);
+    } else {
+      console.log(`[QCWorker] Job ${jobId}: ${progress}%${stage ? ` (${stage})` : ""}`);
+    }
+  } catch (e: any) {
+    console.warn(`[QCWorker] Progress update exception for ${jobId}:`, e.message);
   }
 }
 
@@ -570,19 +644,6 @@ async function resolveFileContextWithProgress(
   }
 }
 
-/**
- * Run QC for job with progress reporting
- */
-async function runQcForJobWithProgress(
-  job: QcJobRow,
-  context: QcJobContext,
-  featuresEnabled: QCFeatures,
-  onProgress?: (percent: number, stage?: string) => Promise<void>
-): Promise<any> {
-  // Import the progress-enabled version from engine
-  const { runQcForJob } = await import("./engine");
-  return runQcForJob(job, context, featuresEnabled, onProgress);
-}
 
 /**
  * Resolve file from Google Drive

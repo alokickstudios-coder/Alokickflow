@@ -37,12 +37,15 @@ export async function GET(request: NextRequest) {
 
     if (error) throw error;
 
-    // Enrich with progress info
+    // Enrich with progress info - use ACTUAL progress from database
     const enrichedJobs = (jobs || []).map((job: any) => ({
       ...job,
-      progress: job.status === "completed" || job.status === "failed" ? 100 :
-                job.status === "running" ? Math.min(95, job.progress || 50) :
-                job.status === "queued" ? 10 : 0,
+      // Use real progress value from DB, only set defaults for undefined
+      progress: job.progress !== undefined && job.progress !== null 
+        ? job.progress 
+        : (job.status === "completed" || job.status === "failed" ? 100 :
+           job.status === "queued" || job.status === "pending" ? 0 : 
+           job.status === "running" ? 5 : 0),
       result: job.result_json, // Alias for compatibility
     }));
 
