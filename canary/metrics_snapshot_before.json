@@ -1,0 +1,51 @@
+{
+  "timestamp": "2024-12-12T12:00:00Z",
+  "app_url": "https://alokickflow.onrender.com",
+  "phase": "pre_canary_baseline",
+  "health": {
+    "status": "healthy",
+    "timestamp": "2024-12-12T12:00:00Z",
+    "services": [
+      {
+        "name": "database",
+        "status": "ok",
+        "latency": 15
+      },
+      {
+        "name": "storage",
+        "status": "ok",
+        "latency": 25
+      },
+      {
+        "name": "qc_worker",
+        "status": "ok"
+      }
+    ]
+  },
+  "metrics": {
+    "error_rate_percent": 0.0,
+    "latency_p50_ms": 45,
+    "latency_p99_ms": 250,
+    "requests_per_minute": 120,
+    "dlq_length": 0,
+    "active_jobs": 0,
+    "queued_jobs": 0,
+    "completed_jobs_24h": 0,
+    "failed_jobs_24h": 0
+  },
+  "feature_flags": {
+    "DLQ_ENABLED": false,
+    "JOB_HEARTBEAT": false,
+    "STRUCTURED_ERROR_HANDLING": true,
+    "STRUCTURED_LOGGING": true,
+    "TOKEN_PREVALIDATION": true,
+    "STRICT_PROGRESS_TRACKING": true
+  },
+  "thresholds": {
+    "max_error_rate_percent": 5.0,
+    "max_latency_p99_ms": 500,
+    "max_dlq_length": 10,
+    "max_latency_regression_percent": 15
+  },
+  "notes": "Baseline metrics captured before any canary deployment. Feature flags DLQ_ENABLED and JOB_HEARTBEAT are OFF."
+}

@@ -1,161 +1,121 @@
-# PR: Production Hardening - Error Handling & Observability
+# PR: Production Hardening Phase 2 - Final Verification
 
 ## Summary
 
-This PR addresses critical reliability issues causing QC jobs to get stuck at 5% progress. The root cause was **41 empty catch blocks** that silently swallowed errors, making debugging impossible.
+This PR completes the production hardening initiative with:
+- ✅ All 34 empty catch blocks fixed
+- ✅ DLQ (Dead Letter Queue) system implemented
+- ✅ Heartbeat/Watchdog system implemented
+- ✅ API Contract tests added
+- ✅ Monitoring alerts configured
+- ✅ Runbooks created
+- ✅ Migration scripts with dry-run validation
+- ✅ Canary rollout scripts
 
-### Changes
+## Changes
 
-| Category | Files Changed | Description |
-|----------|--------------|-------------|
-| Error Handling | `lib/services/qc/worker.ts` | Replaced 7 empty catch blocks with structured logging |
-| Logging | `lib/logging/structured-logger.ts` | Added production-grade structured logging |
-| Feature Flags | `lib/config/feature-flags.ts` | Added feature flag system for safe rollouts |
-| Tests | `tests/qc-worker.test.ts` | Added failing-first tests for error handling |
-| Monitoring | `monitoring/alerts.yaml` | Added alert rules and metrics definitions |
-| Runbooks | `runbooks/qc-stuck-jobs.md` | Added on-call runbook |
-| CI | `ci/pipeline.yaml` | Added CI/CD pipeline with canary deploys |
+### Code Changes (Non-Destructive)
+- **34 empty catch blocks** replaced with structured logging
+- New services: `lib/services/dlq/`, `lib/services/heartbeat/`
+- New API: `/api/admin/dlq` (feature-flagged)
+- New tests: `tests/contracts/api-contracts.test.ts`
 
-### Before/After
+### Feature Flags (All Default OFF)
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `DLQ_ENABLED` | OFF | Dead letter queue for failed jobs |
+| `JOB_HEARTBEAT` | OFF | Heartbeat monitoring for stuck jobs |
 
-| Metric | Before | After |
-|--------|--------|-------|
-| Empty catch blocks | 41 | 0 (in worker.ts) |
-| Error visibility | None | Full structured logs |
-| Debug time | Hours | Minutes |
-| Auto-recovery | 5 min threshold | 2 min threshold |
+### Database Migrations (Requires Operator)
+- `001_create_job_dlq.sql` - Creates DLQ table
+- `002_add_heartbeat_column.sql` - Adds heartbeat column
 
----
+**⚠️ Migrations must be run by operator following `migration/operator_instructions.md`**
 
-## Checklist
+## Verification Artifacts
 
-### Required Before Merge
+| Artifact | Location |
+|----------|----------|
+| Dry-run report | `migration/dry_run_report.md` |
+| Operator instructions | `migration/operator_instructions.md` |
+| Final verification | `verification/final_verification.md` |
+| Rollout checklist | `verification/rollout_checklist.md` |
+| Health check script | `verification/health_check_script.sh` |
+| Canary script | `canary/ci/canary_rollout.sh` |
+| Backout commands | `backout_command.txt` |
 
-- [x] TypeScript compiles without errors
-- [x] Empty catch blocks replaced with logging
-- [x] Tests added (failing-first pattern)
-- [x] Runbook created
-- [ ] Human signoff on policy changes
-- [ ] Canary deployment successful
+## Test Plan
 
-### Policy Decisions (Require Human Approval)
+### Before Merge
+- [x] TypeScript compilation passes
+- [x] Production build succeeds
+- [ ] Unit tests pass (requires operator setup)
+- [ ] Contract tests pass (requires operator setup)
 
-| Decision | Current Value | Notes |
-|----------|---------------|-------|
-| Stuck job threshold | 2 minutes | Reduced from 5 minutes |
-| Download timeout | 60 seconds | May need increase for large files |
-| Max retries | 3 | For DLQ (when enabled) |
+### After Merge
+- [ ] Deploy to staging
+- [ ] Run migrations on staging
+- [ ] Enable feature flags on staging
+- [ ] Run smoke tests
+- [ ] Run load tests (100 concurrent jobs)
+- [ ] Monitor for 24h
 
----
+### Canary Rollout
+- [ ] Stage 0: Deploy (flags OFF)
+- [ ] Stage 1: Run migrations
+- [ ] Stage 2: Enable DLQ (5%)
+- [ ] Stage 3: Enable DLQ (100%)
+- [ ] Stage 4: Enable Heartbeat (5%)
+- [ ] Stage 5: Enable Heartbeat (100%)
 
-## Risk Assessment
+## Rollback Plan
 
-### Low Risk ✅
-- Logging changes (additive only)
-- Feature flag system (defaults OFF for risky features)
-- Test additions
+### Quick Rollback
+```bash
+# Disable feature flags (immediate)
+FEATURE_FLAG_DLQ_ENABLED=false
+FEATURE_FLAG_JOB_HEARTBEAT=false
+```
 
-### Medium Risk ⚠️
-- Stuck job threshold reduction (2 min → may flag legitimate slow jobs)
-  - Mitigation: Monitor false positive rate in canary
-
-### High Risk 🔴
-- None - all changes are backwards compatible
-
----
-
-## Rollout Plan
-
-1. **Phase 1 (Canary 1%)**: Deploy to Render, monitor for 1 hour
-2. **Phase 2 (Canary 5%)**: If no alerts, expand monitoring
-3. **Phase 3 (100%)**: Full rollout
-
-### Rollback Command
-
+### Code Rollback
 ```bash
 git revert HEAD
 git push origin main
 ```
 
-Or from Render dashboard, select previous deployment.
+### Migration Rollback
+See `backout_command.txt` for full SQL
+
+## Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| Migration failure | Low | Medium | Dry-run first, backup |
+| Feature regression | Low | Low | Feature flags OFF by default |
+| Performance impact | Low | Low | Monitoring, canary |
+| DLQ overflow | Low | Low | Alert at 10 entries |
+
+## Required Approvals
+
+- [ ] **@alok** (Dev Lead) - Code review, migration approval
+- [ ] **#platform-oncall** (Ops) - Runbook review, rollback tested
+- [ ] **Product Owner** - Rollout schedule approved
+
+## One-Liner for Operators
+
+> Do NOT run production migrations or toggle flags to ON until dev-lead, ops-oncall and product-owner check these artifacts and grant approval; follow `migration/operator_instructions.md` step-by-step.
 
 ---
 
-## Verification Steps
+## Checklist
 
-### Local Verification
-
-```bash
-# 1. Run TypeScript check
-npm run type-check
-
-# 2. Run tests
-npm test
-
-# 3. Build
-npm run build
-
-# 4. Check for empty catches
-grep -r "} catch {}" --include="*.ts" lib/ app/ && echo "FAIL" || echo "PASS"
-```
-
-### Post-Deployment Verification
-
-```bash
-# 1. Health check
-curl https://alokickflow.onrender.com/api/health/full | jq
-
-# 2. Check for stuck jobs
-curl https://alokickflow.onrender.com/api/qc/debug \
-  -H "Authorization: Bearer $TOKEN" | jq '.stuckJobs'
-
-# 3. Trigger test job and verify progress updates
-# (Manual test - upload small video and monitor progress)
-```
-
----
-
-## Files Changed
-
-```
-analysis/
-├── fallback_report.md        # Anti-pattern analysis
-└── RCAs/
-    └── qc-processing-stuck.md # Root cause analysis
-
-lib/
-├── logging/
-│   └── structured-logger.ts  # NEW: Structured logging
-├── config/
-│   └── feature-flags.ts      # NEW: Feature flag system
-└── services/qc/
-    └── worker.ts             # MODIFIED: Error handling fixes
-
-tests/
-└── qc-worker.test.ts         # NEW: Unit tests
-
-monitoring/
-└── alerts.yaml               # NEW: Alert rules
-
-runbooks/
-└── qc-stuck-jobs.md          # NEW: On-call runbook
-
-ci/
-└── pipeline.yaml             # NEW: CI/CD pipeline
-```
-
----
-
-## Related Issues
-
-- Fixes: QC jobs stuck at 5%
-- Fixes: Pause/Delete not working (previous PR)
-- Addresses: Render memory limit warnings
-
----
-
-## Reviewers
-
-- [ ] @engineering-lead - Code review
-- [ ] @ops-lead - Runbook review
-- [ ] @product - Policy decisions approval
+- [x] Code follows project style guide
+- [x] TypeScript compiles without errors
+- [x] Build succeeds
+- [x] Feature flags default to OFF
+- [x] Migrations are idempotent
+- [x] Rollback commands documented
+- [x] Runbooks created
+- [ ] Tests pass (operator setup required)
+- [ ] Staging deployment tested
+- [ ] Load test completed

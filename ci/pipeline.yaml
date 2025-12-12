@@ -223,7 +223,59 @@ jobs:
           echo "✅ Canary passed"
 
   # ============================================
-  # STAGE 6: AUTO-ROLLBACK (on failure)
+  # STAGE 6: APPROVAL GATE (for production rollout)
+  # ============================================
+  approval-gate:
+    name: Production Approval Gate
+    runs-on: ubuntu-latest
+    needs: canary-deploy
+    if: github.ref == 'refs/heads/main'
+    environment: production-approval
+    steps:
+      - name: Verify approvals
+        run: |
+          echo "============================================"
+          echo "Production Rollout Approval Required"
+          echo "============================================"
+          echo ""
+          echo "Before proceeding with production rollout:"
+          echo "1. Review verification/final_verification.md"
+          echo "2. Run migrations following migration/operator_instructions.md"
+          echo "3. Enable feature flags gradually per rollout_checklist.md"
+          echo ""
+          echo "Required approvers:"
+          echo "  - dev-lead"
+          echo "  - ops-oncall"
+          echo "  - product-owner"
+          echo ""
+          echo "⚠️ DO NOT enable feature flags until all approvals received"
+          
+      - name: Check artifacts exist
+        run: |
+          # Verify required artifacts are present
+          ARTIFACTS=(
+            "verification/final_verification.md"
+            "migration/dry_run_report.md"
+            "migration/operator_instructions.md"
+            "canary/metrics_snapshot_before.json"
+            "verification/health_check_script.sh"
+            "backout_command.txt"
+            "PR_DESCRIPTION.md"
+          )
+          
+          for artifact in "${ARTIFACTS[@]}"; do
+            if [ ! -f "$artifact" ]; then
+              echo "❌ Missing artifact: $artifact"
+              exit 1
+            fi
+            echo "✅ Found: $artifact"
+          done
+          
+          echo ""
+          echo "All required artifacts present"
+
+  # ============================================
+  # STAGE 7: AUTO-ROLLBACK (on failure)
   # ============================================
   rollback:
     name: Rollback

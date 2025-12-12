@@ -1,0 +1,9 @@
+# Migration File Checksums (SHA256)
+# Generated: 2024-12-12
+# Purpose: Verify migration files haven't been tampered with before execution
+
+b375326911b09563ca3a60762a2683061bc6cf18a43c44d7874d6794e32fbaa9  migrations/001_create_job_dlq.sql
+a0b60fff93350ba513bb0d1afdf9bd4b7067d8c269dc684575a08adeb723626a  migrations/002_add_heartbeat_column.sql
+
+# Verification command:
+# shasum -a 256 -c migrations/checksum.txt

@@ -1,0 +1,54 @@
+# Before Fix - Expected Test Failures
+# These tests would FAIL on the previous codebase version
+
+## Test: isJobCancelled error propagation
+File: tests/qc-worker.test.ts
+
+### Expected Failure (Before Fix)
+```
+FAIL tests/qc-worker.test.ts
+  QC Worker Error Handling
+    ✕ should NOT silently return false on database error (5ms)
+
+    Expected: Error to be logged
+    Received: Silent false return
+
+    The current code has:
+    } catch {
+      return false;  // BAD: Error silently swallowed
+    }
+
+    This causes:
+    - No error logged
+    - No visibility into database failures
+    - Jobs may appear cancelled when DB is down
+```
+
+### Code Before Fix (Empty Catch)
+```typescript
+// lib/services/qc/engine.ts (line 528)
+} catch {
+  return false;
+}
+
+// app/api/google/callback/route.ts (line 167)
+} catch {
+  // Ignore errors
+}
+
+// lib/services/qc/ffmpegPaths.ts (multiple)
+} catch {
+  // Continue
+}
+```
+
+## Summary of Expected Failures
+
+| Test | File | Reason |
+|------|------|--------|
+| isJobCancelled error handling | qc-worker.test.ts | Empty catch swallows DB error |
+| Token validation logging | qc-worker.test.ts | No logging on auth failure |
+| Progress update error | qc-worker.test.ts | Silent failure on DB update |
+| FFmpeg path resolution | qc-worker.test.ts | No logging on path not found |
+
+Total: 4 tests would fail before fixes

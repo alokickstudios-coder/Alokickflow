@@ -1,0 +1,66 @@
+# AlokickFlow Hardening Phase 2 - Backout Commands
+# Use these commands in case of emergency rollback
+
+# ============================================
+# LEVEL 1: Feature Flag Rollback (Immediate)
+# ============================================
+
+# Disable all new features (no code change required)
+FEATURE_FLAG_DLQ_ENABLED=false
+FEATURE_FLAG_JOB_HEARTBEAT=false
+
+# Apply via Render dashboard or .env file
+# Restart service after env var change
+
+# ============================================
+# LEVEL 2: Code Rollback (If flags insufficient)
+# ============================================
+
+# Revert the merge commit
+git revert HEAD
+git push origin main
+
+# Wait for Render auto-deploy
+# Verify health: curl https://alokickflow.onrender.com/api/health
+
+# ============================================
+# LEVEL 3: Migration Rollback (If DB issues)
+# ============================================
+
+# Connect to production database
+psql $DB_PROD_URL
+
+# Rollback heartbeat column (SAFE - data loss: none)
+DROP INDEX IF EXISTS idx_qc_jobs_running_heartbeat;
+DROP INDEX IF EXISTS idx_qc_jobs_heartbeat;
+ALTER TABLE qc_jobs DROP COLUMN IF EXISTS last_heartbeat_at;
+
+# Rollback DLQ table (WARNING - will lose DLQ entries)
+# First check if DLQ has entries:
+SELECT COUNT(*) FROM job_dlq;
+
+# If count > 0, export first:
+\copy job_dlq TO 'job_dlq_backup.csv' CSV HEADER;
+
+# Then drop:
+DROP TRIGGER IF EXISTS job_dlq_updated_at ON job_dlq;
+DROP FUNCTION IF EXISTS update_job_dlq_updated_at();
+DROP POLICY IF EXISTS "Users can view own org DLQ entries" ON job_dlq;
+DROP POLICY IF EXISTS "Admins can manage DLQ entries" ON job_dlq;
+DROP TABLE IF EXISTS job_dlq;
+
+# ============================================
+# LEVEL 4: Full Database Restore (Nuclear Option)
+# ============================================
+
+# Only if all else fails
+# Restore from backup taken before migration
+pg_restore -d $DB_PROD_URL backup_before_migration.dump
+
+# ============================================
+# CONTACT FOR EMERGENCIES
+# ============================================
+
+# Slack: #platform-oncall
+# Dev Lead: @alok
+# DB Support: support@supabase.io
